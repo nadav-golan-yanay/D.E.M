@@ -27,6 +27,7 @@
 - Keep role-specific behavior inside the existing `#ifdef GROUND_NODE` and `#ifdef AIR_NODE` branches.
 - Keep debug output behind `DEBUG_ENABLED`; default behavior should stay production-safe with debug disabled.
 - Prefer minimal changes in [D.E.M.ino](D.E.M.ino); this repo does not yet have a broader module structure.
+- Bump the project version on every code or documentation change. Keep `DEM_VERSION` in [D.E.M.ino](D.E.M.ino) and the version line in [README.md](README.md) in sync.
 - If you change serial speed, RF24 channel/rate/CRC, packet structure, or pin assignments, update both roles coherently and call that out in the summary.
 
 ## Key Dependencies

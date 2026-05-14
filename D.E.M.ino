@@ -25,6 +25,8 @@
   #error "This sketch requires an ESP32 board package. In Arduino IDE, select Tools > Board > ESP32 Dev Module."
 #endif
 
+#define DEM_VERSION "0.1.0"
+
 // ============================================================================
 // SKETCH CONFIGURATION
 // ============================================================================
@@ -76,8 +78,8 @@
 #define MAX_PAYLOAD_SIZE 27
 #define PAYLOAD_OFFSET   4
 
-const uint8_t air_addr[5] = "AIR01";
-const uint8_t gnd_addr[5] = "GND01";
+const uint8_t air_addr[5] = {'A', 'I', 'R', '0', '1'};
+const uint8_t gnd_addr[5] = {'G', 'N', 'D', '0', '1'};
 
 RF24 radio(RF24_CE_PIN, RF24_CSN_PIN);
 SPIClass* spi = nullptr;
@@ -279,6 +281,7 @@ void setup() {
   }
 
   DEBUG_PRINT("\n\n=== ESP32 MAVLink Bridge ===\n");
+  DEBUG_PRINT("Version: %s\n", DEM_VERSION);
 #ifdef GROUND_NODE
   DEBUG_PRINT("MODE: GROUND NODE\n");
 #endif

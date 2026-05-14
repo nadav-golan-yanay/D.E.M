@@ -2,6 +2,8 @@
 
 ESP32 MAVLink telemetry bridge over nRF24L01+.
 
+Current version: `0.1.0`
+
 ## Arduino IDE Setup
 
 1. Open [D.E.M.ino](D.E.M.ino) in Arduino IDE.
@@ -34,4 +36,3 @@ ESP32 MAVLink telemetry bridge over nRF24L01+.
 - RF data rate: `250 Kbps`
 
 Both nodes must use the same packet format, addresses, channel, and CRC settings.
-*** Delete File: c:\Users\nadav\Desktop\D.E.M\platformio.ini
