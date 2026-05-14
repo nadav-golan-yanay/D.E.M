@@ -21,6 +21,10 @@
 #include <SPI.h>
 #include <RF24.h>
 
+#if !defined(ARDUINO_ARCH_ESP32)
+  #error "This sketch requires an ESP32 board package. In Arduino IDE, select Tools > Board > ESP32 Dev Module."
+#endif
+
 // ============================================================================
 // SKETCH CONFIGURATION
 // ============================================================================
@@ -248,23 +252,23 @@ void receive_rf24_packet() {
     return;
   }
 
-  if (radio.read(&rx_packet.data, PACKET_SIZE)) {
-    uint8_t payload[MAX_PAYLOAD_SIZE];
-    uint8_t payload_len = 0;
+  radio.read(&rx_packet.data, PACKET_SIZE);
 
-    if (validate_and_extract_packet(payload, &payload_len)) {
-      if (payload_len > 0) {
-        serial_write(payload, payload_len);
-      }
-      stats.rx_packets++;
+  uint8_t payload[MAX_PAYLOAD_SIZE];
+  uint8_t payload_len = 0;
+
+  if (validate_and_extract_packet(payload, &payload_len)) {
+    if (payload_len > 0) {
+      serial_write(payload, payload_len);
+    }
+    stats.rx_packets++;
 
 #ifdef GROUND_NODE
-      DEBUG_PRINT("RX OK: %u bytes (Air->Ground)\n", payload_len);
+    DEBUG_PRINT("RX OK: %u bytes (Air->Ground)\n", payload_len);
 #endif
 #ifdef AIR_NODE
-      DEBUG_PRINT("RX OK: %u bytes (Ground->Air)\n", payload_len);
+    DEBUG_PRINT("RX OK: %u bytes (Ground->Air)\n", payload_len);
 #endif
-    }
   }
 }
 
