@@ -25,7 +25,7 @@
   #error "This sketch requires an ESP32 board package. In Arduino IDE, select Tools > Board > ESP32 Dev Module."
 #endif
 
-#define DEM_VERSION "0.1.1"
+#define DEM_VERSION "0.1.2"
 
 // ============================================================================
 // SKETCH CONFIGURATION
@@ -33,7 +33,9 @@
 // Change this before uploading each device from Arduino IDE.
 #define NODE_ROLE_GROUND 1
 #define NODE_ROLE_AIR    2
-#define NODE_ROLE        NODE_ROLE_GROUND
+#ifndef NODE_ROLE
+  #define NODE_ROLE      NODE_ROLE_GROUND
+#endif
 
 #if NODE_ROLE == NODE_ROLE_GROUND
   #define GROUND_NODE
