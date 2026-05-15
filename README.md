@@ -2,7 +2,7 @@
 
 ESP32 MAVLink telemetry bridge over nRF24L01+.
 
-Current version: `0.1.0`
+Current version: `0.1.1`
 
 ## Arduino IDE Setup
 
@@ -36,3 +36,8 @@ Current version: `0.1.0`
 - RF data rate: `250 Kbps`
 
 Both nodes must use the same packet format, addresses, channel, and CRC settings.
+
+## Link Verification
+
+- Firmware now sends a 1 Hz heartbeat packet (`HBG` or `HBA`) when local serial is idle.
+- With debug enabled, this should make TX and RX counters move on both nodes even when no MAVLink traffic is present.

@@ -25,7 +25,7 @@
   #error "This sketch requires an ESP32 board package. In Arduino IDE, select Tools > Board > ESP32 Dev Module."
 #endif
 
-#define DEM_VERSION "0.1.0"
+#define DEM_VERSION "0.1.1"
 
 // ============================================================================
 // SKETCH CONFIGURATION
@@ -44,7 +44,7 @@
 #endif
 
 // Debug enable: set to 1 for debug output, 0 for production
-#define DEBUG_ENABLED 0
+#define DEBUG_ENABLED 1
 
 #if DEBUG_ENABLED
   #define DEBUG_PRINT(fmt, ...) do { \
@@ -77,6 +77,7 @@
 #define MAGIC_BYTE       0xA5
 #define MAX_PAYLOAD_SIZE 27
 #define PAYLOAD_OFFSET   4
+#define HEARTBEAT_INTERVAL_MS 1000
 
 const uint8_t air_addr[5] = {'A', 'I', 'R', '0', '1'};
 const uint8_t gnd_addr[5] = {'G', 'N', 'D', '0', '1'};
@@ -206,6 +207,26 @@ void serial_write(const uint8_t* data, uint16_t len) {
   get_local_serial().write(data, len);
 }
 
+bool try_build_heartbeat(uint8_t* payload, uint8_t* payload_len) {
+  static uint32_t last_heartbeat_ms = 0;
+  const uint32_t now = millis();
+
+  if ((now - last_heartbeat_ms) < HEARTBEAT_INTERVAL_MS) {
+    return false;
+  }
+
+  last_heartbeat_ms = now;
+  payload[0] = 'H';
+  payload[1] = 'B';
+#ifdef GROUND_NODE
+  payload[2] = 'G';
+#else
+  payload[2] = 'A';
+#endif
+  *payload_len = 3;
+  return true;
+}
+
 void send_rf24_packet() {
   uint8_t payload[MAX_PAYLOAD_SIZE];
   uint8_t payload_len = 0;
@@ -214,7 +235,7 @@ void send_rf24_packet() {
     payload[payload_len++] = serial_read();
   }
 
-  if (payload_len == 0) {
+  if (payload_len == 0 && !try_build_heartbeat(payload, &payload_len)) {
     return;
   }
 
@@ -279,6 +300,7 @@ void setup() {
     Serial.begin(115200);
     delay(100);
   }
+  Serial.println("Start");
 
   DEBUG_PRINT("\n\n=== ESP32 MAVLink Bridge ===\n");
   DEBUG_PRINT("Version: %s\n", DEM_VERSION);
