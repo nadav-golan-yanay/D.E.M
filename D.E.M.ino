@@ -1,36 +1,24 @@
 /*
- * ESP32 MAVLink Telemetry Bridge via nRF24L01+
+ * ESP32 Built-In Radio Link Test (ESP-NOW)
  *
- * Ground Node: USB Serial <-> nRF24 <-> Air Node <-> FC UART
- *
- * Arduino IDE usage:
- * 1. Open this sketch from the D.E.M folder.
- * 2. Install the ESP32 board package and the RF24 library.
- * 3. Set NODE_ROLE to NODE_ROLE_GROUND or NODE_ROLE_AIR before uploading.
- *
- * Packet Format (32 bytes fixed):
- *   [0]     Magic byte (0xA5)
- *   [1]     Sequence number
- *   [2]     Payload length (0-27)
- *   [3]     Reserved
- *   [4-30]  Payload (up to 27 bytes of MAVLink data)
- *   [31]    Padding
+ * This sketch validates direct ESP32-to-ESP32 communication over the built-in
+ * 2.4GHz radio (no nRF24 module required).
  */
 
 #include <Arduino.h>
-#include <SPI.h>
-#include <RF24.h>
+#include <WiFi.h>
+#include <esp_now.h>
+#include <esp_wifi.h>
 
 #if !defined(ARDUINO_ARCH_ESP32)
   #error "This sketch requires an ESP32 board package. In Arduino IDE, select Tools > Board > ESP32 Dev Module."
 #endif
 
-#define DEM_VERSION "0.1.2"
+#define DEM_VERSION "0.2.0"
 
 // ============================================================================
 // SKETCH CONFIGURATION
 // ============================================================================
-// Change this before uploading each device from Arduino IDE.
 #define NODE_ROLE_GROUND 1
 #define NODE_ROLE_AIR    2
 #ifndef NODE_ROLE
@@ -45,8 +33,9 @@
   #error "Set NODE_ROLE to NODE_ROLE_GROUND or NODE_ROLE_AIR"
 #endif
 
-// Debug enable: set to 1 for debug output, 0 for production
 #define DEBUG_ENABLED 1
+#define ESPNOW_CHANNEL 1
+#define HEARTBEAT_INTERVAL_MS 1000
 
 #if DEBUG_ENABLED
   #define DEBUG_PRINT(fmt, ...) do { \
@@ -58,296 +47,154 @@
   #define DEBUG_PRINT(fmt, ...) do {} while(0)
 #endif
 
-// ============================================================================
-// HARDWARE CONFIGURATION
-// ============================================================================
-#define RF24_CE_PIN      4
-#define RF24_CSN_PIN     5
-#define RF24_SCK_PIN     18
-#define RF24_MOSI_PIN    23
-#define RF24_MISO_PIN    19
-
-#define FC_RX_PIN        16
-#define FC_TX_PIN        17
-
-#define RF24_DATA_RATE   RF24_250KBPS
-#define RF24_PA_LEVEL    RF24_PA_MAX
-#define RF24_CHANNEL     76
-#define RF24_CRC_LENGTH  RF24_CRC_16
-
-#define PACKET_SIZE      32
-#define MAGIC_BYTE       0xA5
-#define MAX_PAYLOAD_SIZE 27
-#define PAYLOAD_OFFSET   4
-#define HEARTBEAT_INTERVAL_MS 1000
-
-const uint8_t air_addr[5] = {'A', 'I', 'R', '0', '1'};
-const uint8_t gnd_addr[5] = {'G', 'N', 'D', '0', '1'};
-
-RF24 radio(RF24_CE_PIN, RF24_CSN_PIN);
-SPIClass* spi = nullptr;
-
-struct Stats {
-  uint32_t tx_packets;
-  uint32_t rx_packets;
+struct LinkStats {
+  uint32_t tx_ok;
   uint32_t tx_failed;
-  uint32_t bad_packets;
-  uint32_t duplicate_packets;
+  uint32_t rx_packets;
 };
 
-Stats stats = {0, 0, 0, 0, 0};
-uint8_t last_rx_seq = 0xFF;
+struct HeartbeatPacket {
+  uint32_t seq;
+  uint32_t uptime_ms;
+  uint8_t role;
+  char tag[2];
+};
 
-struct {
-  uint8_t data[PACKET_SIZE];
-} tx_packet, rx_packet;
+LinkStats stats = {0, 0, 0};
+uint8_t broadcast_addr[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
-void setup_spi() {
-  spi = new SPIClass(HSPI);
-  spi->begin(RF24_SCK_PIN, RF24_MISO_PIN, RF24_MOSI_PIN, RF24_CSN_PIN);
+const char* role_name() {
+#ifdef GROUND_NODE
+  return "GROUND";
+#else
+  return "AIR";
+#endif
 }
 
-void setup_rf24() {
-  if (!radio.begin(spi)) {
-    DEBUG_PRINT("RF24 initialization FAILED\n");
+void print_mac(const uint8_t* mac) {
+  DEBUG_PRINT("%02X:%02X:%02X:%02X:%02X:%02X",
+              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+
+void on_send_done(const uint8_t* mac_addr, esp_now_send_status_t status) {
+  if (status == ESP_NOW_SEND_SUCCESS) {
+    stats.tx_ok++;
+  } else {
+    stats.tx_failed++;
+  }
+  (void)mac_addr;
+}
+
+void on_receive(const esp_now_recv_info_t* info, const uint8_t* data, int len) {
+  stats.rx_packets++;
+
+  DEBUG_PRINT("RX %d bytes from ", len);
+  print_mac(info->src_addr);
+
+  if (len >= (int)sizeof(HeartbeatPacket)) {
+    HeartbeatPacket pkt;
+    memcpy(&pkt, data, sizeof(pkt));
+    DEBUG_PRINT(" role=%c seq=%lu uptime=%lu\n", pkt.role,
+                (unsigned long)pkt.seq, (unsigned long)pkt.uptime_ms);
+  } else {
+    DEBUG_PRINT(" (non-heartbeat payload)\n");
+  }
+}
+
+void setup_espnow() {
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
+
+  if (esp_now_init() != ESP_OK) {
+    DEBUG_PRINT("ESP-NOW initialization FAILED\n");
     while (1) {
+      delay(1000);
     }
   }
 
-  radio.setDataRate(RF24_DATA_RATE);
-  radio.setPALevel(RF24_PA_LEVEL);
-  radio.setChannel(RF24_CHANNEL);
-  radio.setCRCLength(RF24_CRC_LENGTH);
-  radio.enableAckPayload();
-  radio.enableDynamicPayloads();
-  radio.setRetries(15, 15);
-  radio.setPayloadSize(PACKET_SIZE);
+  esp_now_register_send_cb(on_send_done);
+  esp_now_register_recv_cb(on_receive);
 
-  DEBUG_PRINT("RF24 initialized\n");
-}
+  esp_now_peer_info_t peer_info = {};
+  memcpy(peer_info.peer_addr, broadcast_addr, 6);
+  peer_info.channel = ESPNOW_CHANNEL;
+  peer_info.encrypt = false;
 
-void setup_serial() {
-#ifdef GROUND_NODE
-  Serial.begin(115200);
-  delay(100);
-  DEBUG_PRINT("Ground node serial initialized (USB 115200)\n");
-#endif
-
-#ifdef AIR_NODE
-  Serial2.begin(115200, SERIAL_8N1, FC_RX_PIN, FC_TX_PIN);
-  delay(100);
-  DEBUG_PRINT("Air node serial2 initialized (115200, GPIO16/17)\n");
-#endif
-}
-
-void build_packet(uint8_t seq, const uint8_t* payload, uint8_t len) {
-  if (len > MAX_PAYLOAD_SIZE) {
-    len = MAX_PAYLOAD_SIZE;
+  if (!esp_now_is_peer_exist(broadcast_addr)) {
+    if (esp_now_add_peer(&peer_info) != ESP_OK) {
+      DEBUG_PRINT("Failed to add broadcast peer\n");
+      while (1) {
+        delay(1000);
+      }
+    }
   }
 
-  tx_packet.data[0] = MAGIC_BYTE;
-  tx_packet.data[1] = seq;
-  tx_packet.data[2] = len;
-  tx_packet.data[3] = 0;
-
-  if (len > 0) {
-    memcpy(&tx_packet.data[PAYLOAD_OFFSET], payload, len);
-  }
-
-  if (len < MAX_PAYLOAD_SIZE) {
-    memset(&tx_packet.data[PAYLOAD_OFFSET + len], 0,
-           PACKET_SIZE - PAYLOAD_OFFSET - len);
-  }
+  DEBUG_PRINT("ESP-NOW initialized on channel %d\n", ESPNOW_CHANNEL);
 }
 
-bool validate_and_extract_packet(uint8_t* out_payload, uint8_t* out_len) {
-  if (rx_packet.data[0] != MAGIC_BYTE) {
-    stats.bad_packets++;
-    return false;
-  }
+void send_heartbeat() {
+  static uint32_t last_heartbeat = 0;
+  static uint32_t seq = 0;
 
-  const uint8_t seq = rx_packet.data[1];
-  const uint8_t len = rx_packet.data[2];
-
-  if (len > MAX_PAYLOAD_SIZE) {
-    stats.bad_packets++;
-    return false;
-  }
-
-  if (seq == last_rx_seq) {
-    stats.duplicate_packets++;
-    return false;
-  }
-
-  last_rx_seq = seq;
-
-  if (len > 0) {
-    memcpy(out_payload, &rx_packet.data[PAYLOAD_OFFSET], len);
-  }
-  *out_len = len;
-
-  return true;
-}
-
-HardwareSerial& get_local_serial() {
-#ifdef GROUND_NODE
-  return Serial;
-#else
-  return Serial2;
-#endif
-}
-
-uint32_t serial_available() {
-  return get_local_serial().available();
-}
-
-int serial_read() {
-  return get_local_serial().read();
-}
-
-void serial_write(const uint8_t* data, uint16_t len) {
-  get_local_serial().write(data, len);
-}
-
-bool try_build_heartbeat(uint8_t* payload, uint8_t* payload_len) {
-  static uint32_t last_heartbeat_ms = 0;
   const uint32_t now = millis();
-
-  if ((now - last_heartbeat_ms) < HEARTBEAT_INTERVAL_MS) {
-    return false;
+  if ((now - last_heartbeat) < HEARTBEAT_INTERVAL_MS) {
+    return;
   }
+  last_heartbeat = now;
 
-  last_heartbeat_ms = now;
-  payload[0] = 'H';
-  payload[1] = 'B';
+  HeartbeatPacket pkt = {};
+  pkt.seq = seq++;
+  pkt.uptime_ms = now;
 #ifdef GROUND_NODE
-  payload[2] = 'G';
+  pkt.role = 'G';
 #else
-  payload[2] = 'A';
+  pkt.role = 'A';
 #endif
-  *payload_len = 3;
-  return true;
+  pkt.tag[0] = 'H';
+  pkt.tag[1] = 'B';
+
+  const esp_err_t err = esp_now_send(broadcast_addr,
+                                     reinterpret_cast<uint8_t*>(&pkt),
+                                     sizeof(pkt));
+  if (err != ESP_OK) {
+    stats.tx_failed++;
+    DEBUG_PRINT("TX enqueue failed: %d\n", (int)err);
+  }
 }
 
-void send_rf24_packet() {
-  uint8_t payload[MAX_PAYLOAD_SIZE];
-  uint8_t payload_len = 0;
-
-  while (serial_available() && payload_len < MAX_PAYLOAD_SIZE) {
-    payload[payload_len++] = serial_read();
-  }
-
-  if (payload_len == 0 && !try_build_heartbeat(payload, &payload_len)) {
+void print_stats() {
+  static uint32_t last_stats = 0;
+  const uint32_t now = millis();
+  if ((now - last_stats) < 10000) {
     return;
   }
+  last_stats = now;
 
-  static uint8_t tx_seq = 0;
-  build_packet(tx_seq, payload, payload_len);
-  tx_seq++;
-
-  radio.stopListening();
-
-#ifdef GROUND_NODE
-  if (!radio.write(&tx_packet.data, PACKET_SIZE)) {
-    stats.tx_failed++;
-    DEBUG_PRINT("TX FAILED (Ground->Air)\n");
-  } else {
-    stats.tx_packets++;
-    DEBUG_PRINT("TX OK: %u bytes (Ground->Air, seq=%u)\n", payload_len, tx_seq - 1);
-  }
-#endif
-
-#ifdef AIR_NODE
-  if (!radio.write(&tx_packet.data, PACKET_SIZE)) {
-    stats.tx_failed++;
-    DEBUG_PRINT("TX FAILED (Air->Ground)\n");
-  } else {
-    stats.tx_packets++;
-    DEBUG_PRINT("TX OK: %u bytes (Air->Ground, seq=%u)\n", payload_len, tx_seq - 1);
-  }
-#endif
-
-  radio.startListening();
-}
-
-void receive_rf24_packet() {
-  radio.startListening();
-
-  if (!radio.available()) {
-    return;
-  }
-
-  radio.read(&rx_packet.data, PACKET_SIZE);
-
-  uint8_t payload[MAX_PAYLOAD_SIZE];
-  uint8_t payload_len = 0;
-
-  if (validate_and_extract_packet(payload, &payload_len)) {
-    if (payload_len > 0) {
-      serial_write(payload, payload_len);
-    }
-    stats.rx_packets++;
-
-#ifdef GROUND_NODE
-    DEBUG_PRINT("RX OK: %u bytes (Air->Ground)\n", payload_len);
-#endif
-#ifdef AIR_NODE
-    DEBUG_PRINT("RX OK: %u bytes (Ground->Air)\n", payload_len);
-#endif
-  }
+  DEBUG_PRINT("\n=== ESP-NOW STATS ===\n");
+  DEBUG_PRINT("TX ok: %lu\n", (unsigned long)stats.tx_ok);
+  DEBUG_PRINT("TX failed: %lu\n", (unsigned long)stats.tx_failed);
+  DEBUG_PRINT("RX packets: %lu\n", (unsigned long)stats.rx_packets);
+  DEBUG_PRINT("=====================\n\n");
 }
 
 void setup() {
-  if (DEBUG_ENABLED) {
-    Serial.begin(115200);
-    delay(100);
-  }
-  Serial.println("Start");
+  Serial.begin(115200);
+  delay(150);
 
-  DEBUG_PRINT("\n\n=== ESP32 MAVLink Bridge ===\n");
+  DEBUG_PRINT("\n\n=== ESP32 Built-In Radio Link Test ===\n");
   DEBUG_PRINT("Version: %s\n", DEM_VERSION);
-#ifdef GROUND_NODE
-  DEBUG_PRINT("MODE: GROUND NODE\n");
-#endif
-#ifdef AIR_NODE
-  DEBUG_PRINT("MODE: AIR NODE\n");
-#endif
+  DEBUG_PRINT("MODE: %s NODE\n", role_name());
 
-  setup_spi();
-  setup_rf24();
-  setup_serial();
+  setup_espnow();
 
-#ifdef GROUND_NODE
-  radio.openReadingPipe(1, gnd_addr);
-  radio.stopListening();
-  DEBUG_PRINT("Ground: RX on GND01, TX to AIR01\n");
-#endif
-
-#ifdef AIR_NODE
-  radio.openReadingPipe(1, air_addr);
-  radio.stopListening();
-  DEBUG_PRINT("Air: RX on AIR01, TX to GND01\n");
-#endif
-
+  DEBUG_PRINT("Local STA MAC: ");
+  DEBUG_PRINT("%s\n", WiFi.macAddress().c_str());
   DEBUG_PRINT("Bridge initialized. Ready.\n\n");
 }
 
 void loop() {
-  send_rf24_packet();
-  receive_rf24_packet();
-
-  static uint32_t last_stats = 0;
-  const uint32_t now = millis();
-  if (DEBUG_ENABLED && (now - last_stats) > 10000) {
-    last_stats = now;
-    DEBUG_PRINT("\n=== STATS ===\n");
-    DEBUG_PRINT("TX packets: %lu\n", stats.tx_packets);
-    DEBUG_PRINT("RX packets: %lu\n", stats.rx_packets);
-    DEBUG_PRINT("TX failed: %lu\n", stats.tx_failed);
-    DEBUG_PRINT("Bad packets: %lu\n", stats.bad_packets);
-    DEBUG_PRINT("Duplicate packets: %lu\n", stats.duplicate_packets);
-    DEBUG_PRINT("==============\n\n");
-  }
-
-  delayMicroseconds(100);
+  send_heartbeat();
+  print_stats();
+  delay(5);
 }

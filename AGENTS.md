@@ -2,7 +2,7 @@
 
 ## Project Scope
 
-- This repository is an Arduino IDE ESP32 firmware project for an nRF24-based MAVLink telemetry bridge.
+- This repository is an Arduino IDE ESP32 firmware project for an ESP-NOW built-in radio link test.
 - The main implementation lives in [D.E.M.ino](D.E.M.ino).
 
 ## Build And Validation
@@ -18,8 +18,8 @@
 
 - There is a single firmware source file: [D.E.M.ino](D.E.M.ino).
 - Role selection is compile-time only, via the `NODE_ROLE` constant in [D.E.M.ino](D.E.M.ino).
-- Ground node bridges USB Serial to RF24; air node bridges RF24 to `Serial2` on GPIO16/GPIO17.
-- The RF24 packet format is a fixed 32-byte frame with a maximum payload of 27 bytes. Do not change packet size, offsets, magic byte, or addressing on one side only.
+- Ground and air nodes communicate directly using ESP-NOW over the ESP32 built-in 2.4GHz radio.
+- Keep ESP-NOW channel and packet structure aligned across both roles.
 
 ## Change Guidance
 
@@ -28,11 +28,10 @@
 - Keep debug output behind `DEBUG_ENABLED`; default behavior should stay production-safe with debug disabled.
 - Prefer minimal changes in [D.E.M.ino](D.E.M.ino); this repo does not yet have a broader module structure.
 - Bump the project version on every code or documentation change. Keep `DEM_VERSION` in [D.E.M.ino](D.E.M.ino) and the version line in [README.md](README.md) in sync.
-- If you change serial speed, RF24 channel/rate/CRC, packet structure, or pin assignments, update both roles coherently and call that out in the summary.
+- If you change serial speed, ESP-NOW channel, packet structure, or role behavior, update both roles coherently and call that out in the summary.
 
 ## Key Dependencies
 
-- RF24 library in Arduino Library Manager.
 - ESP32 board support in Arduino Boards Manager.
 
 ## Current Gaps
