@@ -2,7 +2,7 @@
 
 ## Project Scope
 
-- This repository is an Arduino IDE ESP32 firmware project for an ESP-NOW built-in radio link test.
+- This repository is an Arduino IDE ESP32 firmware project for an ESP-NOW built-in radio telemetry bridge.
 - The main implementation lives in [D.E.M.ino](D.E.M.ino).
 
 ## Build And Validation
