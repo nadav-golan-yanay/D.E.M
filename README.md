@@ -2,7 +2,7 @@
 
 ESP32 telemetry bridge using built-in ESP-NOW radio.
 
-Current version: `0.3.2`
+Current version: `0.3.7`
 
 ## Arduino IDE Setup
 
@@ -74,3 +74,4 @@ Common PX4 parameters to check (names can differ by PX4 version/port):
 - Debug prints are disabled in current version to avoid corrupting MAVLink stream.
 - Ground diagnostics commands are disabled during passthrough tests.
 - UART bytes are bridged over ESP-NOW with framing and sequence tracking.
+- By default, if the air node is offline, the ground node does not emit synthetic MAVLink heartbeats; Mission Planner should only connect when real FC telemetry is present.

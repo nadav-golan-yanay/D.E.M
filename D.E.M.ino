@@ -13,12 +13,13 @@
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
+#include <esp_arduino_version.h>
 
 #if !defined(ARDUINO_ARCH_ESP32)
   #error "This sketch requires an ESP32 board package. In Arduino IDE, select Tools > Board > ESP32 Dev Module."
 #endif
 
-#define DEM_VERSION "0.3.2"
+#define DEM_VERSION "0.3.7"
 
 // ============================================================================
 // SKETCH CONFIGURATION
@@ -39,6 +40,7 @@
 #endif
 
 #define DEBUG_ENABLED 0
+
 #define ENABLE_CONSOLE_COMMANDS 0
 #define ESPNOW_CHANNEL 1
 #define HEARTBEAT_INTERVAL_MS 1000
@@ -49,6 +51,10 @@
 #define DEM_PROTO_VERSION 1
 #define MAX_PAYLOAD_SIZE 180
 #define MAX_TX_PACKETS_PER_LOOP 4
+#ifdef GROUND_NODE
+#define OFFLINE_MAVLINK_HEARTBEAT 0
+#define OFFLINE_HEARTBEAT_GRACE_MS 2000
+#endif
 
 #if DEBUG_ENABLED
   #define DEBUG_PRINT(fmt, ...) do { \
@@ -97,6 +103,8 @@ uint8_t broadcast_addr[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 uint32_t tx_seq = 0;
 SeqTracker ground_seq = {false, 0};
 SeqTracker air_seq = {false, 0};
+uint32_t last_air_rx_ms = 0;
+uint8_t mavlink_seq = 0;
 
 #ifdef GROUND_NODE
 String cmd_buffer;
@@ -243,6 +251,12 @@ bool handle_received_packet(const uint8_t* data, int len) {
     return false;
   }
 
+#ifdef GROUND_NODE
+  if (hdr.src_role == NODE_ROLE_AIR) {
+    last_air_rx_ms = millis();
+  }
+#endif
+
   update_sequence_metrics(hdr.src_role, hdr.seq);
   stats.rx_packets++;
   stats.rx_bytes += hdr.payload_len;
@@ -261,7 +275,12 @@ bool handle_received_packet(const uint8_t* data, int len) {
   return true;
 }
 
+// ESP32 core 3.x uses esp_now_recv_info_t; 2.x uses MAC pointer callback.
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
 void on_receive(const esp_now_recv_info_t* info, const uint8_t* data, int len) {
+#else
+void on_receive(const uint8_t* mac_addr, const uint8_t* data, int len) {
+#endif
   const bool ok = handle_received_packet(data, len);
   if (!ok) {
     return;
@@ -271,13 +290,18 @@ void on_receive(const esp_now_recv_info_t* info, const uint8_t* data, int len) {
     DemPacketHeader hdr;
     memcpy(&hdr, data, sizeof(hdr));
     DEBUG_PRINT("RX type=%u len=%u from ", hdr.type, hdr.payload_len);
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
     print_mac(info->src_addr);
+#else
+    print_mac(mac_addr);
+#endif
     DEBUG_PRINT("\n");
   }
 }
 
 bool send_packet(PacketType type, const uint8_t* payload, uint8_t payload_len) {
   if (payload_len > MAX_PAYLOAD_SIZE) {
+    DEBUG_PRINT("Payload size exceeds maximum limit\n");
     return false;
   }
 
@@ -299,10 +323,12 @@ bool send_packet(PacketType type, const uint8_t* payload, uint8_t payload_len) {
                                      sizeof(DemPacketHeader) + payload_len);
   if (err == ESP_OK) {
     stats.tx_enqueued++;
+    DEBUG_PRINT("Packet enqueued: type=%u, len=%u\n", type, payload_len);
     return true;
   }
 
   stats.tx_enqueue_failed++;
+  DEBUG_PRINT("Failed to enqueue packet: type=%u, len=%u, err=%d\n", type, payload_len, err);
   return false;
 }
 
@@ -312,7 +338,9 @@ void setup_espnow() {
   esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
 
   if (esp_now_init() != ESP_OK) {
-    DEBUG_PRINT("ESP-NOW initialization FAILED\n");
+#if DEBUG_ENABLED
+    Serial.println("[ERROR] ESP-NOW initialization FAILED");
+#endif
     while (1) {
       delay(1000);
     }
@@ -328,7 +356,9 @@ void setup_espnow() {
 
   if (!esp_now_is_peer_exist(broadcast_addr)) {
     if (esp_now_add_peer(&peer_info) != ESP_OK) {
-      DEBUG_PRINT("Failed to add broadcast peer\n");
+#if DEBUG_ENABLED
+      Serial.println("[ERROR] Failed to add broadcast peer");
+#endif
       while (1) {
         delay(1000);
       }
@@ -338,6 +368,68 @@ void setup_espnow() {
   DEBUG_PRINT("ESP-NOW initialized on channel %d\n", ESPNOW_CHANNEL);
 }
 
+uint16_t x25_crc_accumulate(uint8_t data, uint16_t crc) {
+  uint8_t tmp = data ^ (uint8_t)(crc & 0xFF);
+  tmp ^= (tmp << 4);
+  return (crc >> 8) ^ ((uint16_t)tmp << 8) ^ ((uint16_t)tmp << 3) ^ ((uint16_t)tmp >> 4);
+}
+
+uint16_t mavlink_crc_v1(const uint8_t* buffer, uint16_t length, uint8_t crc_extra) {
+  uint16_t crc = 0xFFFF;
+  for (uint16_t i = 0; i < length; i++) {
+    crc = x25_crc_accumulate(buffer[i], crc);
+  }
+  crc = x25_crc_accumulate(crc_extra, crc);
+  return crc;
+}
+
+#ifdef GROUND_NODE
+void send_offline_mavlink_heartbeat() {
+#if OFFLINE_MAVLINK_HEARTBEAT
+  // MAVLink v1 HEARTBEAT message (msg id 0, payload len 9, crc extra 50)
+  // Payload order: custom_mode, type, autopilot, base_mode, system_status, mavlink_version
+  uint8_t packet[17];
+  packet[0] = 0xFE; // v1 STX
+  packet[1] = 9;    // payload length
+  packet[2] = mavlink_seq++;
+  packet[3] = 1;    // sysid
+  packet[4] = 1;    // compid
+  packet[5] = 0;    // msgid HEARTBEAT
+
+  const uint32_t custom_mode = 0;
+  packet[6]  = (uint8_t)(custom_mode & 0xFF);
+  packet[7]  = (uint8_t)((custom_mode >> 8) & 0xFF);
+  packet[8]  = (uint8_t)((custom_mode >> 16) & 0xFF);
+  packet[9]  = (uint8_t)((custom_mode >> 24) & 0xFF);
+  packet[10] = 2;    // MAV_TYPE_QUADROTOR
+  packet[11] = 12;   // MAV_AUTOPILOT_PX4
+  packet[12] = 0x01; // MAV_MODE_FLAG_CUSTOM_MODE_ENABLED
+  packet[13] = 4;    // MAV_STATE_ACTIVE
+  packet[14] = 3;   // mavlink v1 indicator in payload
+
+  const uint16_t crc = mavlink_crc_v1(&packet[1], 14, 50);
+  packet[15] = (uint8_t)(crc & 0xFF);
+  packet[16] = (uint8_t)((crc >> 8) & 0xFF);
+
+  Serial.write(packet, sizeof(packet));
+#endif
+}
+#endif
+
+#ifdef GROUND_NODE
+void send_heartbeat_if_due() {
+  static uint32_t last_heartbeat = 0;
+  const uint32_t now = millis();
+  if ((now - last_heartbeat) < HEARTBEAT_INTERVAL_MS) {
+    return;
+  }
+  last_heartbeat = now;
+  send_packet(PKT_HEARTBEAT, nullptr, 0);
+  if ((now - last_air_rx_ms) >= OFFLINE_HEARTBEAT_GRACE_MS) {
+    send_offline_mavlink_heartbeat();
+  }
+}
+#else
 void send_heartbeat_if_due() {
   static uint32_t last_heartbeat = 0;
   const uint32_t now = millis();
@@ -347,6 +439,7 @@ void send_heartbeat_if_due() {
   last_heartbeat = now;
   send_packet(PKT_HEARTBEAT, nullptr, 0);
 }
+#endif
 
 void bridge_uplink_serial() {
   uint8_t payload[MAX_PAYLOAD_SIZE];
@@ -422,6 +515,9 @@ void handle_console_commands() {}
 void setup() {
   Serial.begin(115200);
   delay(150);
+#if DEBUG_ENABLED
+  Serial.println("=== DEM GROUND NODE STARTUP ===");
+#endif
 
 #ifdef AIR_NODE
   Serial2.begin(FC_BAUDRATE, SERIAL_8N1, FC_RX_PIN, FC_TX_PIN);

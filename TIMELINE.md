@@ -58,6 +58,29 @@ This timeline summarizes the major milestones completed in this repository so fa
 - Both ESP32 boards compile and flash successfully with role-specific firmware builds.
 - Runtime logs confirm bidirectional heartbeat reception over ESP-NOW.
 
+9. Mission Planner and MAVLink passthrough hardening
+- Investigated Ground-node connection failures with Mission Planner using live serial capture and MAVLink packet parsing.
+- Identified telemetry corruption risk from debug prints and moved back to MAVLink-clean serial output for normal operation.
+- Added and validated synthetic offline HEARTBEAT behavior for diagnostics, then refined behavior based on integration results.
+- Confirmed Ground output packet cadence and heartbeat framing over USB with repeated capture runs.
+
+10. ESP32 stability and boot-noise mitigation
+- Diagnosed recurring ESP32 boot/core-dump text artifacts observed on Ground serial startup.
+- Performed full flash erase and clean reflash cycle to remove stale core-dump data artifacts.
+- Re-validated startup stream and MAVLink packet extraction after erase/upload sequence.
+
+11. Connection semantics refinement for Mission Planner
+- Updated offline behavior to avoid false-positive Mission Planner "connected" state when Air/FC telemetry is absent.
+- Ground firmware now defaults to no synthetic heartbeat unless real telemetry path is active (Air + FC path required for connect).
+- Verified no-heartbeat output on Ground when Air/FC is offline, aligning connection state with actual link availability.
+
+12. Version progression completed in this session
+- Progressed release versions through iterative debug and integration fixes:
+  - `0.3.4`: debug stream cleanup for MAVLink integrity.
+  - `0.3.5`: Mission Planner-friendly heartbeat identity adjustments.
+  - `0.3.6`: disabled offline synthetic heartbeat by default to prevent params hang.
+  - `0.3.7`: timeline/documentation synchronization checkpoint for end-of-session handoff.
+
 ## Current State
 
 - Active firmware: [D.E.M.ino](D.E.M.ino)
