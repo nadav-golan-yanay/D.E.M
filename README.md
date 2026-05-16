@@ -2,7 +2,7 @@
 
 ESP32 telemetry bridge using built-in ESP-NOW radio.
 
-Current version: `0.3.0`
+Current version: `0.3.1`
 
 ## Arduino IDE Setup
 

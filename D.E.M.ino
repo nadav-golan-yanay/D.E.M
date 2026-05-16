@@ -18,7 +18,7 @@
   #error "This sketch requires an ESP32 board package. In Arduino IDE, select Tools > Board > ESP32 Dev Module."
 #endif
 
-#define DEM_VERSION "0.3.0"
+#define DEM_VERSION "0.3.1"
 
 // ============================================================================
 // SKETCH CONFIGURATION
