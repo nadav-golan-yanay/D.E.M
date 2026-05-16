@@ -2,7 +2,7 @@
 
 ESP32 telemetry bridge using built-in ESP-NOW radio.
 
-Current version: `0.3.1`
+Current version: `0.3.2`
 
 ## Arduino IDE Setup
 
@@ -42,3 +42,35 @@ Ground node serial console supports these commands:
 - `::reset`
 
 Commands are line-based and intended for diagnostics when the USB serial stream is not carrying raw telemetry.
+
+## PX4 + Mission Planner Test Prep
+
+### 1. Hardware wiring for Air node to PX4
+
+- ESP32 `GPIO17` (TX2) -> PX4 telemetry port RX
+- ESP32 `GPIO16` (RX2) -> PX4 telemetry port TX
+- ESP32 GND -> PX4 GND
+
+Use only 3.3V UART logic. Do not connect 5V UART signals directly.
+
+### 2. PX4 serial/MAVLink setup
+
+Configure the PX4 telemetry port you used for MAVLink, with baud matching `FC_BAUDRATE` in [D.E.M.ino](D.E.M.ino).
+
+Common PX4 parameters to check (names can differ by PX4 version/port):
+
+- `MAV_1_CONFIG` (or another MAV instance) to the selected TELEM port
+- `MAV_1_MODE` to normal/onboard mode as needed
+- `SER_TELx_BAUD` to match firmware baud (currently `115200`)
+
+### 3. Ground node to Mission Planner
+
+- Connect Ground ESP32 over USB to PC.
+- In Mission Planner, select the Ground ESP32 COM port.
+- Set COM baud to `115200`.
+
+### 4. Firmware behavior for MAVLink tests
+
+- Debug prints are disabled in current version to avoid corrupting MAVLink stream.
+- Ground diagnostics commands are disabled during passthrough tests.
+- UART bytes are bridged over ESP-NOW with framing and sequence tracking.

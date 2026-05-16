@@ -18,7 +18,7 @@
   #error "This sketch requires an ESP32 board package. In Arduino IDE, select Tools > Board > ESP32 Dev Module."
 #endif
 
-#define DEM_VERSION "0.3.1"
+#define DEM_VERSION "0.3.2"
 
 // ============================================================================
 // SKETCH CONFIGURATION
@@ -38,8 +38,8 @@
   #error "Set NODE_ROLE to NODE_ROLE_GROUND or NODE_ROLE_AIR"
 #endif
 
-#define DEBUG_ENABLED 1
-#define ENABLE_CONSOLE_COMMANDS 1
+#define DEBUG_ENABLED 0
+#define ENABLE_CONSOLE_COMMANDS 0
 #define ESPNOW_CHANNEL 1
 #define HEARTBEAT_INTERVAL_MS 1000
 #define STATS_INTERVAL_MS 10000
