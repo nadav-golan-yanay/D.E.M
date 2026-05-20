@@ -4,6 +4,14 @@
 
 Prepare migration from dual-ESP32 ESP-NOW telemetry bridge to a Raspberry Pi based telemetry and video node while keeping Mission Planner compatibility and deterministic recovery behavior.
 
+## Confirmed Architecture Decision
+
+1. Vehicle stack is Pixhawk 4 Mini + ArduPilot + Mission Planner on ground.
+2. ESP32 pair remains telemetry-only (MAVLink transport), not video transport.
+3. Camera is attached to Raspberry Pi 4 Model B companion computer.
+4. Pixhawk sends MAVLink to Raspberry Pi, and Raspberry Pi forwards telemetry and streams video as separate flows.
+5. Video is carried over IP as a dedicated stream, not tunneled through MAVLink.
+
 ## Scope of This Prep
 
 - Define target architecture.
@@ -19,6 +27,13 @@ Prepare migration from dual-ESP32 ESP-NOW telemetry bridge to a Raspberry Pi bas
 3. Transport options:
 - Primary: MAVLink over UDP/TCP from Raspberry Pi to ground network endpoint.
 - Optional fallback: USB serial passthrough bridge for local bench testing.
+
+## Link and RF Guidance
+
+1. For Wi-Fi range, prefer 2.4 GHz operation in early builds.
+2. Use proper antenna placement and separation from noisy power electronics.
+3. Prefer USB Wi-Fi adapter with external antenna over embedded antenna when possible.
+4. Keep transport abstraction IP-based so you can later swap Wi-Fi for professional IP radios (for example CreoMagic or DTC) without changing drone-side telemetry/camera architecture.
 
 ## Hardware Baseline
 
@@ -115,3 +130,4 @@ sudo apt install -y mavlink-router gstreamer1.0-tools gstreamer1.0-plugins-good 
 - heartbeat present
 - parameter exchange successful
 3. Keep one-path-at-a-time changes to simplify root-cause analysis.
+4. Never route camera stream through MAVLink telemetry transport in this project architecture.

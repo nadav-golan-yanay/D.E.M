@@ -2,7 +2,7 @@
 
 ESP32 telemetry bridge using built-in ESP-NOW radio.
 
-Current version: `0.3.9`
+Current version: `0.3.10`
 
 ## Arduino IDE Setup
 
@@ -47,6 +47,11 @@ Commands are line-based and intended for diagnostics when the USB serial stream 
 
 For incident handoff and rapid troubleshooting steps, see [MP_RECOVERY_PLAYBOOK.md](MP_RECOVERY_PLAYBOOK.md).
 For Raspberry Pi + camera migration planning, see [PI_CAMERA_MIGRATION_PREP.md](PI_CAMERA_MIGRATION_PREP.md).
+
+Architecture decision for camera integration:
+- Keep ESP32 pair focused on MAVLink telemetry transport.
+- Do not stream video through MAVLink telemetry channels.
+- Use Raspberry Pi companion computer for camera and separate IP video stream.
 
 ### 1. Hardware wiring for Air node to PX4
 
