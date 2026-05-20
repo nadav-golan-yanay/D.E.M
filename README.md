@@ -2,7 +2,7 @@
 
 ESP32 telemetry bridge using built-in ESP-NOW radio.
 
-Current version: `0.3.7`
+Current version: `0.3.9`
 
 ## Arduino IDE Setup
 
@@ -44,6 +44,9 @@ Ground node serial console supports these commands:
 Commands are line-based and intended for diagnostics when the USB serial stream is not carrying raw telemetry.
 
 ## PX4 + Mission Planner Test Prep
+
+For incident handoff and rapid troubleshooting steps, see [MP_RECOVERY_PLAYBOOK.md](MP_RECOVERY_PLAYBOOK.md).
+For Raspberry Pi + camera migration planning, see [PI_CAMERA_MIGRATION_PREP.md](PI_CAMERA_MIGRATION_PREP.md).
 
 ### 1. Hardware wiring for Air node to PX4
 

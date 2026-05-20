@@ -2,7 +2,7 @@
 
 This timeline summarizes the major milestones completed in this repository so far.
 
-## 2026-05-14 to 2026-05-16
+## 2026-05-14 to 2026-05-20
 
 1. Initial project standardization
 - Added agent guidance file and project conventions for role-based firmware work.
@@ -80,6 +80,67 @@ This timeline summarizes the major milestones completed in this repository so fa
   - `0.3.5`: Mission Planner-friendly heartbeat identity adjustments.
   - `0.3.6`: disabled offline synthetic heartbeat by default to prevent params hang.
   - `0.3.7`: timeline/documentation synchronization checkpoint for end-of-session handoff.
+
+13. End-to-end Mission Planner simulation success
+- Reflashed both nodes with explicit role overrides to remove role ambiguity:
+  - Air node on COM13 with AIR role.
+  - Ground node on COM10 with GROUND role.
+- Simulated Mission Planner behavior in two stages over COM10:
+  - heartbeat detection
+  - parameter request/response exchange
+- Verified successful MAVLink passthrough from PX4 through Air->Ground bridge:
+  - HEARTBEAT (msg id 0) observed
+  - PARAM_VALUE (msg id 22) observed in high volume after request
+  - Additional telemetry and STATUSTEXT packets observed
+
+14. Recovery handoff documentation
+- Added [MP_RECOVERY_PLAYBOOK.md](MP_RECOVERY_PLAYBOOK.md) for reusable incident context and deterministic recovery flow.
+
+15. Documentation and migration preparation checkpoint
+- Added [PI_CAMERA_MIGRATION_PREP.md](PI_CAMERA_MIGRATION_PREP.md) with a practical transition plan from ESP32 bridge nodes to Raspberry Pi + camera architecture.
+- Added service templates and deployment scaffolding under [pi/](pi/) for reproducible startup and operations.
+- Synced project version to `0.3.9` for this documentation and planning update.
+
+## Module and Tool Usage Log
+
+1. 2026-05-14
+- GitHub Copilot coding agent (GPT-5.3-Codex): project conversion and iterative firmware refactoring.
+- Arduino IDE + ESP32 board package: baseline compile/upload workflow.
+
+2. 2026-05-14 to 2026-05-15
+- Arduino CLI (`arduino-cli`): automated compile and upload for repeatable Ground/Air flashing.
+- ESP32 Arduino core libraries (`WiFi`, `esp_now`, `esp_wifi`): implemented ESP-NOW telemetry bridge.
+
+3. 2026-05-15 to 2026-05-16
+- Mission Planner: connection and parameter-flow validation target.
+- PX4 MAVLink telemetry link: upstream telemetry source for Air node.
+- PowerShell serial analysis scripts (`System.IO.Ports.SerialPort`): packet capture and MAVLink msg-id decoding.
+- Esptool (`esptool.py` / `esptool.exe`): full flash erase and boot-noise/core-dump artifact cleanup.
+
+4. 2026-05-17
+- Explicit role-override flashing via Arduino CLI for both nodes:
+  - `-DNODE_ROLE=NODE_ROLE_AIR` to COM13
+  - `-DNODE_ROLE=NODE_ROLE_GROUND` to COM10
+- Mission Planner connect simulation module (custom MAVLink requester in PowerShell):
+  - sent PARAM_REQUEST_LIST
+  - verified PARAM_VALUE responses and active telemetry flow
+
+5. 2026-05-20
+- Raspberry Pi migration planning module:
+  - produced a concrete transition architecture for replacing ESP32 bridge links with Linux services.
+  - added camera pipeline options (low-latency and compatible variants), startup ordering, and operations checklist.
+- Documentation handoff module:
+  - consolidated known-good state and recovery flows for reuse by future AI models and engineers.
+
+## Assistant Module Usage (Copilot Tooling)
+
+1. 2026-05-14 to 2026-05-20
+- `run_in_terminal`: compile, upload, serial capture, MAVLink parsing, git operations.
+- `apply_patch`: firmware/doc edits and version synchronization.
+- `create_file`: new handoff and migration preparation documents.
+- `read_file`: validation and context gathering from project files.
+- `list_dir` and `file_search`: workspace structure and target discovery.
+- `multi_tool_use.parallel`: parallelized read-only context collection for faster diagnostics.
 
 ## Current State
 

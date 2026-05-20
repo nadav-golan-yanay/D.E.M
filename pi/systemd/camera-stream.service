@@ -1,0 +1,16 @@
+[Unit]
+Description=DEM Camera Stream Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/dem/pi.env
+ExecStart=/bin/sh -c '/usr/bin/libcamera-vid -t 0 --inline --width ${CAM_WIDTH} --height ${CAM_HEIGHT} --framerate ${CAM_FPS} --codec h264 -o - | /usr/bin/gst-launch-1.0 -v fdsrc ! h264parse ! rtph264pay config-interval=1 pt=96 ! udpsink host=${VIDEO_HOST} port=${VIDEO_PORT} sync=false'
+Restart=always
+RestartSec=2
+User=pi
+Group=pi
+
+[Install]
+WantedBy=multi-user.target

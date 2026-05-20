@@ -1,0 +1,19 @@
+[Unit]
+Description=DEM MAVLink Router
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/dem/pi.env
+ExecStart=/usr/bin/mavlink-routerd \
+  -e ${GCS_HOST}:${GCS_UDP_PORT} \
+  -e 127.0.0.1:${LOCAL_UDP_PORT} \
+  /dev/ttyAMA0:${PX4_BAUD}
+Restart=always
+RestartSec=2
+User=pi
+Group=pi
+
+[Install]
+WantedBy=multi-user.target
