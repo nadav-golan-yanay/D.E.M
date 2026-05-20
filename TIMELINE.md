@@ -101,6 +101,14 @@ This timeline summarizes the major milestones completed in this repository so fa
 - Added service templates and deployment scaffolding under [pi/](pi/) for reproducible startup and operations.
 - Synced project version to `0.3.9` for this documentation and planning update.
 
+16. Camera architecture decision finalized
+- Confirmed system direction for Pixhawk 4 Mini + ArduPilot + Mission Planner stack:
+  - ESP modules remain telemetry-only.
+  - Camera path moves to Raspberry Pi 4 Model B companion computer.
+  - Video remains separate IP stream (not MAVLink tunneled video).
+- Added RF/range guidance (2.4 GHz preference, antenna placement, external-antenna adapter option).
+- Captured long-term compatibility note: future migration to professional IP radios (for example CreoMagic or DTC) should not require drone-side architecture change.
+
 ## Module and Tool Usage Log
 
 1. 2026-05-14
@@ -131,6 +139,11 @@ This timeline summarizes the major milestones completed in this repository so fa
   - added camera pipeline options (low-latency and compatible variants), startup ordering, and operations checklist.
 - Documentation handoff module:
   - consolidated known-good state and recovery flows for reuse by future AI models and engineers.
+
+6. 2026-05-20 (architecture lock)
+- Architecture decision module:
+  - explicitly locked telemetry and video separation model.
+  - documented migration-safe RF abstraction for later radio replacement.
 
 ## Assistant Module Usage (Copilot Tooling)
 
