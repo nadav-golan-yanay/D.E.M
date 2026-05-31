@@ -14,12 +14,13 @@
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include <esp_arduino_version.h>
+#include <esp_camera.h>
 
 #if !defined(ARDUINO_ARCH_ESP32)
   #error "This sketch requires an ESP32 board package. In Arduino IDE, select Tools > Board > ESP32 Dev Module."
 #endif
 
-#define DEM_VERSION "0.3.10"
+#define DEM_VERSION "0.3.14"
 
 // ============================================================================
 // SKETCH CONFIGURATION
@@ -46,11 +47,53 @@
 #define HEARTBEAT_INTERVAL_MS 1000
 #define STATS_INTERVAL_MS 10000
 #define FC_BAUDRATE 115200
-#define FC_RX_PIN 16
-#define FC_TX_PIN 17
 #define DEM_PROTO_VERSION 1
 #define MAX_PAYLOAD_SIZE 180
 #define MAX_TX_PACKETS_PER_LOOP 4
+
+#define AIR_HW_ESP32_DEV 1
+#define AIR_HW_ESP32_CAM 2
+
+#ifndef AIR_HW_PROFILE
+  // Auto-select ESP32-CAM profile when common board macros are present.
+  #if defined(ARDUINO_ESP32_CAM) || defined(ARDUINO_AI_THINKER_ESP32_CAM) || defined(ARDUINO_ESP32CAM)
+    #define AIR_HW_PROFILE AIR_HW_ESP32_CAM
+  #else
+    #define AIR_HW_PROFILE AIR_HW_ESP32_DEV
+  #endif
+#endif
+
+// Keep camera disabled by default to protect telemetry timing.
+#ifndef ENABLE_AIR_CAMERA
+  #define ENABLE_AIR_CAMERA 0
+#endif
+
+#define AIR_CAMERA_CAPTURE_INTERVAL_MS 1500
+#define AIR_STATUS_LINK_TIMEOUT_MS 1500
+#define AIR_STATUS_BLINK_PERIOD_MS 1000
+#define AIR_STATUS_BLINK_ON_MS 40
+#define DEM_MAVLINK_MSG_ID_COMMAND_LONG 76
+#define DEM_MAV_CMD_LED_CONTROL 31000
+#define DEM_LED_MODE_AUTO 0
+#define DEM_LED_MODE_OFF 1
+#define DEM_LED_MODE_ON 2
+
+#ifdef AIR_NODE
+  #if AIR_HW_PROFILE == AIR_HW_ESP32_DEV
+    #define FC_RX_PIN 16
+    #define FC_TX_PIN 17
+  #elif AIR_HW_PROFILE == AIR_HW_ESP32_CAM
+    // ESP32-CAM profile uses pins typically exposed on AI-Thinker modules.
+    // Avoid SD-card usage on these pins while running FC UART.
+    #define FC_RX_PIN 13
+    #define FC_TX_PIN 14
+  #else
+    #error "Unsupported AIR_HW_PROFILE"
+  #endif
+#else
+  #define FC_RX_PIN 16
+  #define FC_TX_PIN 17
+#endif
 #ifdef GROUND_NODE
 #define OFFLINE_MAVLINK_HEARTBEAT 0
 #define OFFLINE_HEARTBEAT_GRACE_MS 2000
@@ -108,6 +151,256 @@ uint8_t mavlink_seq = 0;
 
 #ifdef GROUND_NODE
 String cmd_buffer;
+#endif
+
+#ifdef AIR_NODE
+uint32_t last_fc_uart_rx_ms = 0;
+#endif
+
+#if defined(AIR_NODE) && (AIR_HW_PROFILE == AIR_HW_ESP32_CAM)
+static const uint8_t AIR_STATUS_LED_PIN = 4;
+uint8_t air_led_mode = DEM_LED_MODE_AUTO;
+
+struct MavlinkFilterState {
+  bool in_frame;
+  uint16_t expected_len;
+  uint16_t index;
+  uint8_t frame[300];
+};
+
+MavlinkFilterState gcs_to_fc_filter = {false, 0, 0, {0}};
+
+uint16_t mavlink_frame_expected_len(const uint8_t* frame, uint16_t index) {
+  if (index < 2) {
+    return 0;
+  }
+
+  const uint8_t stx = frame[0];
+  const uint16_t payload_len = frame[1];
+
+  if (stx == 0xFE) {
+    return (uint16_t)(8 + payload_len);
+  }
+
+  if (stx == 0xFD) {
+    if (index < 4) {
+      return 0;
+    }
+    const bool signed_frame = (frame[2] & 0x01) != 0;
+    return (uint16_t)(12 + payload_len + (signed_frame ? 13 : 0));
+  }
+
+  return 0;
+}
+
+void set_air_led_mode_from_param(float param1) {
+  const int mode = (int)param1;
+  if (mode < DEM_LED_MODE_AUTO || mode > DEM_LED_MODE_ON) {
+    return;
+  }
+  air_led_mode = (uint8_t)mode;
+}
+
+bool handle_bridge_control_frame(const uint8_t* frame, uint16_t frame_len) {
+  if (frame_len < 8) {
+    return false;
+  }
+
+  const uint8_t stx = frame[0];
+  uint8_t msgid = 0;
+  const uint8_t* payload = nullptr;
+  uint8_t payload_len = frame[1];
+
+  if (stx == 0xFE) {
+    if (frame_len < 8) {
+      return false;
+    }
+    msgid = frame[5];
+    payload = frame + 6;
+  } else if (stx == 0xFD) {
+    if (frame_len < 12) {
+      return false;
+    }
+    msgid = frame[7];
+    payload = frame + 10;
+  } else {
+    return false;
+  }
+
+  if (msgid != DEM_MAVLINK_MSG_ID_COMMAND_LONG || payload_len < 33) {
+    return false;
+  }
+
+  const uint16_t command = (uint16_t)payload[28] | ((uint16_t)payload[29] << 8);
+  if (command != DEM_MAV_CMD_LED_CONTROL) {
+    return false;
+  }
+
+  float param1 = 0.0f;
+  memcpy(&param1, payload, sizeof(float));
+  set_air_led_mode_from_param(param1);
+  return true;
+}
+
+uint8_t filter_ground_to_fc_payload(const uint8_t* input, uint8_t input_len, uint8_t* output) {
+  uint8_t out_len = 0;
+
+  for (uint8_t i = 0; i < input_len; i++) {
+    const uint8_t b = input[i];
+
+    if (!gcs_to_fc_filter.in_frame) {
+      if (b == 0xFE || b == 0xFD) {
+        gcs_to_fc_filter.in_frame = true;
+        gcs_to_fc_filter.expected_len = 0;
+        gcs_to_fc_filter.index = 0;
+        gcs_to_fc_filter.frame[gcs_to_fc_filter.index++] = b;
+      } else {
+        output[out_len++] = b;
+      }
+      continue;
+    }
+
+    if (gcs_to_fc_filter.index >= sizeof(gcs_to_fc_filter.frame)) {
+      for (uint16_t j = 0; j < gcs_to_fc_filter.index; j++) {
+        output[out_len++] = gcs_to_fc_filter.frame[j];
+      }
+      gcs_to_fc_filter.in_frame = false;
+      gcs_to_fc_filter.expected_len = 0;
+      gcs_to_fc_filter.index = 0;
+      output[out_len++] = b;
+      continue;
+    }
+
+    gcs_to_fc_filter.frame[gcs_to_fc_filter.index++] = b;
+
+    if (gcs_to_fc_filter.expected_len == 0) {
+      gcs_to_fc_filter.expected_len = mavlink_frame_expected_len(
+        gcs_to_fc_filter.frame, gcs_to_fc_filter.index
+      );
+      if (gcs_to_fc_filter.expected_len > sizeof(gcs_to_fc_filter.frame)) {
+        for (uint16_t j = 0; j < gcs_to_fc_filter.index; j++) {
+          output[out_len++] = gcs_to_fc_filter.frame[j];
+        }
+        gcs_to_fc_filter.in_frame = false;
+        gcs_to_fc_filter.expected_len = 0;
+        gcs_to_fc_filter.index = 0;
+      }
+    }
+
+    if (gcs_to_fc_filter.expected_len > 0 && gcs_to_fc_filter.index == gcs_to_fc_filter.expected_len) {
+      const bool consumed = handle_bridge_control_frame(
+        gcs_to_fc_filter.frame, gcs_to_fc_filter.expected_len
+      );
+
+      if (!consumed) {
+        for (uint16_t j = 0; j < gcs_to_fc_filter.expected_len; j++) {
+          output[out_len++] = gcs_to_fc_filter.frame[j];
+        }
+      }
+
+      gcs_to_fc_filter.in_frame = false;
+      gcs_to_fc_filter.expected_len = 0;
+      gcs_to_fc_filter.index = 0;
+    }
+  }
+
+  return out_len;
+}
+
+void setup_air_status_led() {
+  pinMode(AIR_STATUS_LED_PIN, OUTPUT);
+  digitalWrite(AIR_STATUS_LED_PIN, LOW);
+}
+
+void service_air_status_led() {
+  const uint32_t now = millis();
+  bool led_on = false;
+
+  if (air_led_mode == DEM_LED_MODE_ON) {
+    led_on = true;
+  } else if (air_led_mode == DEM_LED_MODE_AUTO) {
+    const bool link_active = (now - last_fc_uart_rx_ms) <= AIR_STATUS_LINK_TIMEOUT_MS;
+    if (link_active) {
+      const uint32_t phase = now % AIR_STATUS_BLINK_PERIOD_MS;
+      led_on = phase < AIR_STATUS_BLINK_ON_MS;
+    }
+  }
+
+  digitalWrite(AIR_STATUS_LED_PIN, led_on ? HIGH : LOW);
+}
+#else
+void setup_air_status_led() {}
+void service_air_status_led() {}
+#endif
+
+#if defined(AIR_NODE) && (AIR_HW_PROFILE == AIR_HW_ESP32_CAM) && ENABLE_AIR_CAMERA
+static bool camera_initialized = false;
+
+bool setup_air_camera() {
+  camera_config_t config = {};
+  config.ledc_channel = LEDC_CHANNEL_0;
+  config.ledc_timer = LEDC_TIMER_0;
+  config.pin_d0 = 5;
+  config.pin_d1 = 18;
+  config.pin_d2 = 19;
+  config.pin_d3 = 21;
+  config.pin_d4 = 36;
+  config.pin_d5 = 39;
+  config.pin_d6 = 34;
+  config.pin_d7 = 35;
+  config.pin_xclk = 0;
+  config.pin_pclk = 22;
+  config.pin_vsync = 25;
+  config.pin_href = 23;
+  config.pin_sscb_sda = 26;
+  config.pin_sscb_scl = 27;
+  config.pin_pwdn = 32;
+  config.pin_reset = -1;
+  config.xclk_freq_hz = 20000000;
+  config.pixel_format = PIXFORMAT_JPEG;
+  config.frame_size = FRAMESIZE_QVGA;
+  config.jpeg_quality = 20;
+  config.fb_count = 1;
+  config.grab_mode = CAMERA_GRAB_LATEST;
+
+  const esp_err_t err = esp_camera_init(&config);
+  if (err != ESP_OK) {
+    DEBUG_PRINT("Camera init failed: %d\n", err);
+    return false;
+  }
+
+  camera_initialized = true;
+  DEBUG_PRINT("Camera init OK\n");
+  return true;
+}
+
+void service_air_camera_if_due() {
+  static uint32_t last_capture_ms = 0;
+  if (!camera_initialized) {
+    return;
+  }
+
+  const uint32_t now = millis();
+  if ((now - last_capture_ms) < AIR_CAMERA_CAPTURE_INTERVAL_MS) {
+    return;
+  }
+  last_capture_ms = now;
+
+  camera_fb_t* fb = esp_camera_fb_get();
+  if (!fb) {
+    DEBUG_PRINT("Camera capture failed\n");
+    return;
+  }
+
+  DEBUG_PRINT("Camera frame bytes=%u\n", (unsigned int)fb->len);
+  esp_camera_fb_return(fb);
+}
+#else
+bool setup_air_camera() {
+  return false;
+}
+
+void service_air_camera_if_due() {}
 #endif
 
 const char* role_name() {
@@ -264,7 +557,17 @@ bool handle_received_packet(const uint8_t* data, int len) {
   const uint8_t* payload = data + sizeof(DemPacketHeader);
 
   if (hdr.type == PKT_SERIAL_DATA && hdr.payload_len > 0) {
+#if defined(AIR_NODE) && (AIR_HW_PROFILE == AIR_HW_ESP32_CAM)
+    uint8_t filtered_payload[MAX_PAYLOAD_SIZE];
+    const uint8_t filtered_len = filter_ground_to_fc_payload(
+      payload, hdr.payload_len, filtered_payload
+    );
+    if (filtered_len > 0) {
+      downlink_serial().write(filtered_payload, filtered_len);
+    }
+#else
     downlink_serial().write(payload, hdr.payload_len);
+#endif
   }
 
   if (DEBUG_ENABLED && hdr.type == PKT_HEARTBEAT) {
@@ -452,6 +755,9 @@ void bridge_uplink_serial() {
       if (v < 0) {
         break;
       }
+#ifdef AIR_NODE
+      last_fc_uart_rx_ms = millis();
+#endif
       payload[count++] = (uint8_t)v;
     }
 
@@ -521,6 +827,8 @@ void setup() {
 
 #ifdef AIR_NODE
   Serial2.begin(FC_BAUDRATE, SERIAL_8N1, FC_RX_PIN, FC_TX_PIN);
+  setup_air_status_led();
+  setup_air_camera();
 #endif
 
   DEBUG_PRINT("\n\n=== ESP32 ESP-NOW Telemetry Bridge ===\n");
@@ -537,6 +845,10 @@ void loop() {
   handle_console_commands();
   bridge_uplink_serial();
   send_heartbeat_if_due();
+#ifdef AIR_NODE
+  service_air_status_led();
+  service_air_camera_if_due();
+#endif
   print_stats();
   delay(2);
 }
