@@ -1,5 +1,7 @@
 # Mission Planner Recovery Playbook (Ground COM10, Air COM13)
 
+Document version: `0.3.35`
+
 ## Purpose
 
 Use this document as a handoff summary for any engineer or AI model when Mission Planner connection fails.

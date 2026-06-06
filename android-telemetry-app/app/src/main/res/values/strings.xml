@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">DEM Telemetry Relay</string>
+    <string name="relay_title">Telemetry relay</string>
+    <string name="relay_channel_name">Telemetry relay</string>
+    <string name="relay_channel_description">Foreground service for MAVLink UDP relay</string>
+</resources>
