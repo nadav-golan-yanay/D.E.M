@@ -20,7 +20,7 @@
   #error "This sketch requires an ESP32 board package. In Arduino IDE, select Tools > Board > ESP32 Dev Module."
 #endif
 
-#define DEM_VERSION "0.3.14"
+#define DEM_VERSION "0.3.35"
 
 // ============================================================================
 // SKETCH CONFIGURATION
@@ -73,10 +73,15 @@
 #define AIR_STATUS_BLINK_PERIOD_MS 1000
 #define AIR_STATUS_BLINK_ON_MS 40
 #define DEM_MAVLINK_MSG_ID_COMMAND_LONG 76
+#define DEM_MAVLINK_MSG_ID_COMMAND_ACK 77
 #define DEM_MAV_CMD_LED_CONTROL 31000
+#define DEM_MAV_CMD_DO_SET_RELAY 181
 #define DEM_LED_MODE_AUTO 0
 #define DEM_LED_MODE_OFF 1
 #define DEM_LED_MODE_ON 2
+#define DEM_MAV_RESULT_ACCEPTED 0
+#define DEM_MAV_RESULT_DENIED 2
+#define DEM_MAVLINK_COMMAND_ACK_CRC_EXTRA 143
 
 #ifdef AIR_NODE
   #if AIR_HW_PROFILE == AIR_HW_ESP32_DEV
@@ -113,6 +118,9 @@ enum PacketType : uint8_t {
   PKT_HEARTBEAT = 1,
   PKT_SERIAL_DATA = 2,
 };
+
+uint16_t mavlink_crc_v1(const uint8_t* buffer, uint16_t length, uint8_t crc_extra);
+bool send_packet(PacketType type, const uint8_t* payload, uint8_t payload_len);
 
 struct __attribute__((packed)) DemPacketHeader {
   uint8_t proto_ver;
@@ -168,7 +176,17 @@ struct MavlinkFilterState {
   uint8_t frame[300];
 };
 
+struct BridgeAckState {
+  bool pending;
+  uint16_t command;
+  uint8_t result;
+  uint8_t seq;
+  uint8_t sysid;
+  uint8_t compid;
+};
+
 MavlinkFilterState gcs_to_fc_filter = {false, 0, 0, {0}};
+BridgeAckState bridge_ack = {false, 0, DEM_MAV_RESULT_ACCEPTED, 0, 1, 1};
 
 uint16_t mavlink_frame_expected_len(const uint8_t* frame, uint16_t index) {
   if (index < 2) {
@@ -193,12 +211,46 @@ uint16_t mavlink_frame_expected_len(const uint8_t* frame, uint16_t index) {
   return 0;
 }
 
-void set_air_led_mode_from_param(float param1) {
+bool set_air_led_mode_from_param(float param1) {
   const int mode = (int)param1;
   if (mode < DEM_LED_MODE_AUTO || mode > DEM_LED_MODE_ON) {
-    return;
+    return false;
   }
   air_led_mode = (uint8_t)mode;
+  return true;
+}
+
+void queue_bridge_command_ack(uint16_t command, uint8_t result, uint8_t sysid, uint8_t compid) {
+  bridge_ack.pending = true;
+  bridge_ack.command = command;
+  bridge_ack.result = result;
+  bridge_ack.sysid = sysid;
+  bridge_ack.compid = compid;
+}
+
+void service_bridge_command_ack() {
+  if (!bridge_ack.pending) {
+    return;
+  }
+
+  uint8_t ack[8 + 3];
+  ack[0] = 0xFE;
+  ack[1] = 3;
+  ack[2] = bridge_ack.seq++;
+  ack[3] = bridge_ack.sysid;
+  ack[4] = bridge_ack.compid;
+  ack[5] = DEM_MAVLINK_MSG_ID_COMMAND_ACK;
+  ack[6] = (uint8_t)(bridge_ack.command & 0xFF);
+  ack[7] = (uint8_t)((bridge_ack.command >> 8) & 0xFF);
+  ack[8] = bridge_ack.result;
+
+  const uint16_t crc = mavlink_crc_v1(&ack[1], 8, DEM_MAVLINK_COMMAND_ACK_CRC_EXTRA);
+  ack[9] = (uint8_t)(crc & 0xFF);
+  ack[10] = (uint8_t)((crc >> 8) & 0xFF);
+
+  if (send_packet(PKT_SERIAL_DATA, ack, (uint8_t)sizeof(ack))) {
+    bridge_ack.pending = false;
+  }
 }
 
 bool handle_bridge_control_frame(const uint8_t* frame, uint16_t frame_len) {
@@ -232,14 +284,47 @@ bool handle_bridge_control_frame(const uint8_t* frame, uint16_t frame_len) {
   }
 
   const uint16_t command = (uint16_t)payload[28] | ((uint16_t)payload[29] << 8);
-  if (command != DEM_MAV_CMD_LED_CONTROL) {
-    return false;
+
+  // Custom bridge command: param1 is led mode (0 auto, 1 off, 2 on).
+  if (command == DEM_MAV_CMD_LED_CONTROL) {
+    float param1 = 0.0f;
+    memcpy(&param1, payload, sizeof(float));
+    const bool ok = set_air_led_mode_from_param(param1);
+    queue_bridge_command_ack(
+      command,
+      ok ? DEM_MAV_RESULT_ACCEPTED : DEM_MAV_RESULT_DENIED,
+      payload[30],
+      payload[31]
+    );
+    return true;
   }
 
-  float param1 = 0.0f;
-  memcpy(&param1, payload, sizeof(float));
-  set_air_led_mode_from_param(param1);
-  return true;
+  // Mission Planner "Actions" compatible path:
+  // MAV_CMD_DO_SET_RELAY with relay number 9 controls bridge LED mode.
+  // param2: 0=off, 1=on, 2=auto. Other relay numbers pass through to FC.
+  if (command == DEM_MAV_CMD_DO_SET_RELAY) {
+    float relay_num_f = 0.0f;
+    float relay_value = 0.0f;
+    memcpy(&relay_num_f, payload, sizeof(float));
+    memcpy(&relay_value, payload + 4, sizeof(float));
+
+    const int relay_num = (int)relay_num_f;
+    if (relay_num != 9) {
+      return false;
+    }
+
+    if (relay_value >= 1.5f) {
+      set_air_led_mode_from_param((float)DEM_LED_MODE_AUTO);
+    } else if (relay_value >= 0.5f) {
+      set_air_led_mode_from_param((float)DEM_LED_MODE_ON);
+    } else {
+      set_air_led_mode_from_param((float)DEM_LED_MODE_OFF);
+    }
+    queue_bridge_command_ack(command, DEM_MAV_RESULT_ACCEPTED, payload[30], payload[31]);
+    return true;
+  }
+
+  return false;
 }
 
 uint8_t filter_ground_to_fc_payload(const uint8_t* input, uint8_t input_len, uint8_t* output) {
@@ -331,6 +416,7 @@ void service_air_status_led() {
 #else
 void setup_air_status_led() {}
 void service_air_status_led() {}
+void service_bridge_command_ack() {}
 #endif
 
 #if defined(AIR_NODE) && (AIR_HW_PROFILE == AIR_HW_ESP32_CAM) && ENABLE_AIR_CAMERA
@@ -847,6 +933,7 @@ void loop() {
   send_heartbeat_if_due();
 #ifdef AIR_NODE
   service_air_status_led();
+  service_bridge_command_ack();
   service_air_camera_if_due();
 #endif
   print_stats();

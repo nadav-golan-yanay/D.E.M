@@ -1,0 +1,10 @@
+[Unit]
+Description=DEM Service Health Check
+After=mavlink-router.service camera-stream.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/dem/pi.env
+ExecStart=/usr/local/bin/dem-healthcheck.sh
+User=root
+Group=root

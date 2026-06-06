@@ -2,7 +2,8 @@
 
 ESP32 telemetry bridge using built-in ESP-NOW radio.
 
-Current version: `0.3.14`
+Current version: `0.3.35`
+Android app version: `1.1.7` (versionCode `15`)
 
 ## Arduino IDE Setup
 
@@ -35,6 +36,13 @@ Current version: `0.3.14`
    - `command=31000`, `param1=0` auto pulse on FC traffic.
    - `command=31000`, `param1=1` LED off.
    - `command=31000`, `param1=2` LED on.
+- Mission Planner UI path (no command sender needed):
+   - Open `Actions` tab in Flight Data.
+   - Use `Set Relay` with relay number `9`.
+   - Value `0` -> LED off.
+   - Value `1` -> LED on.
+   - Value `2` -> LED auto pulse mode.
+   - Bridge replies with `COMMAND_ACK` for relay `9` commands so Mission Planner shows command success.
 - Each node sends a heartbeat packet every second.
 - Framed packets include protocol version, packet type, role, payload length, sequence, and uptime.
 - Link stats include missing, duplicate, and out-of-order sequence tracking.
@@ -64,6 +72,28 @@ Architecture decision for camera integration:
 - Keep ESP32 pair focused on MAVLink telemetry transport.
 - Do not stream video through MAVLink telemetry channels.
 - Use Raspberry Pi companion computer for camera and separate IP video stream.
+
+## Raspberry Pi Companion Interface (Migration Track)
+
+Use this interface contract to keep migration deterministic and avoid telemetry/video cross-corruption:
+
+- FC telemetry input on vehicle:
+   - Pixhawk/FC UART MAVLink -> Air-side transport endpoint.
+- Telemetry transport (current fallback baseline):
+   - ESP32 Air Serial2 <-> ESP-NOW <-> ESP32 Ground USB Serial -> Mission Planner.
+- Companion telemetry path (optional migration path):
+   - Pixhawk/FC UART MAVLink -> Raspberry Pi -> `mavlink-routerd` UDP out to Mission Planner.
+- Video path:
+   - Raspberry Pi camera -> dedicated IP stream (RTP/UDP or RTSP), never tunneled through MAVLink.
+- Startup and fault policy:
+   - ESP32 telemetry bridge remains valid fallback/legacy link while Pi services are integrated and bench-validated.
+   - Ground serial must stay MAVLink-clean in normal operation.
+
+Pi deployment templates and checks live under [pi/](pi/), and workflow details are in [PI_CAMERA_MIGRATION_PREP.md](PI_CAMERA_MIGRATION_PREP.md).
+
+Phone-link focused integration notes are in [PHONE_LINK_WORKSTREAM.md](PHONE_LINK_WORKSTREAM.md).
+
+The phone-side telemetry app scaffold is in [android-telemetry-app/README.md](android-telemetry-app/README.md).
 
 ### 1. Hardware wiring for Air node to PX4
 

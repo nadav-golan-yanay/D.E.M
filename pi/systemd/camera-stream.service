@@ -1,16 +1,18 @@
 [Unit]
 Description=DEM Camera Stream Service
-After=network-online.target
+After=network-online.target mavlink-router.service
 Wants=network-online.target
 
 [Service]
 Type=simple
 EnvironmentFile=/etc/dem/pi.env
-ExecStart=/bin/sh -c '/usr/bin/libcamera-vid -t 0 --inline --width ${CAM_WIDTH} --height ${CAM_HEIGHT} --framerate ${CAM_FPS} --codec h264 -o - | /usr/bin/gst-launch-1.0 -v fdsrc ! h264parse ! rtph264pay config-interval=1 pt=96 ! udpsink host=${VIDEO_HOST} port=${VIDEO_PORT} sync=false'
+ExecStart=/usr/local/bin/dem-camera-stream-start.sh
 Restart=always
 RestartSec=2
 User=pi
 Group=pi
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target

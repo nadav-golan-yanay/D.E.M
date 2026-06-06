@@ -1,5 +1,7 @@
 # Project Timeline
 
+Document version: `0.3.35`
+
 This timeline summarizes the major milestones completed in this repository so far.
 
 ## 2026-05-14 to 2026-05-20
@@ -109,6 +111,101 @@ This timeline summarizes the major milestones completed in this repository so fa
 - Added RF/range guidance (2.4 GHz preference, antenna placement, external-antenna adapter option).
 - Captured long-term compatibility note: future migration to professional IP radios (for example CreoMagic or DTC) should not require drone-side architecture change.
 
+## 2026-06-05
+
+1. Pi companion service hardening and interface definition
+- Refined [PI_CAMERA_MIGRATION_PREP.md](PI_CAMERA_MIGRATION_PREP.md) with:
+  - explicit telemetry/video/RF interface contract
+  - startup ordering and rollback behavior
+  - logging and health-check model
+  - bench checklist for telemetry, routing, and stream isolation validation
+
+2. Pi deployment scaffolding improvements
+- Added startup scripts:
+  - [pi/bin/dem-mavlink-router-start.sh](pi/bin/dem-mavlink-router-start.sh)
+  - [pi/bin/dem-camera-stream-start.sh](pi/bin/dem-camera-stream-start.sh)
+  - [pi/bin/dem-healthcheck.sh](pi/bin/dem-healthcheck.sh)
+- Updated service templates:
+  - [pi/systemd/mavlink-router.service](pi/systemd/mavlink-router.service)
+  - [pi/systemd/camera-stream.service](pi/systemd/camera-stream.service)
+- Added health-check systemd units:
+  - [pi/systemd/dem-healthcheck.service](pi/systemd/dem-healthcheck.service)
+  - [pi/systemd/dem-healthcheck.timer](pi/systemd/dem-healthcheck.timer)
+- Expanded environment template in [pi/config/pi.env.example](pi/config/pi.env.example).
+
+3. Version synchronization
+- Bumped firmware and docs version to `0.3.19` in:
+  - [D.E.M.ino](D.E.M.ino)
+  - [README.md](README.md)
+
+4. Phone-link workstream kickoff
+- Added companion backhaul guidance for hotspot/tether path in:
+  - [PHONE_LINK_WORKSTREAM.md](PHONE_LINK_WORKSTREAM.md)
+- Added optional phone-link route and gateway checks in:
+  - [pi/bin/dem-healthcheck.sh](pi/bin/dem-healthcheck.sh)
+  - [pi/config/pi.env.example](pi/config/pi.env.example)
+
+5. Android telemetry relay scaffold
+- Added a minimal phone-side telemetry relay app scaffold in:
+  - [android-telemetry-app/](android-telemetry-app/)
+- Bumped firmware/docs version to `0.3.21` in:
+  - [D.E.M.ino](D.E.M.ino)
+  - [README.md](README.md)
+
+6. Android build configuration fix
+- Enabled Compose build support and set a compatible Kotlin Compose compiler extension for the phone telemetry app.
+
+7. Android Pixhawk link indicator
+- Added MAVLink heartbeat detection in the phone relay service and a UI connection indicator showing Pixhawk link status.
+- Updated phone app version to `0.2.0`.
+- Bumped firmware/docs version to `0.3.22` in:
+  - [D.E.M.ino](D.E.M.ino)
+  - [README.md](README.md)
+
+8. Pixhawk parameter-aligned app behavior
+- Aligned phone app FC link criteria to the current Pixhawk params baseline (`SYSID_THISMAV=1`) and ArduPilot heartbeat identity.
+- Added FC-specific heartbeat counters and metadata display in the app UI.
+- Updated phone app version to `0.3.0`.
+- Bumped firmware/docs version to `0.3.23` in:
+  - [D.E.M.ino](D.E.M.ino)
+  - [README.md](README.md)
+
+9. In-app diagnostics logging
+- Added in-app log buffer and logcat logging for relay lifecycle and socket errors.
+- Added log viewer and clear button in the phone UI for faster field diagnostics.
+- Updated phone app version to `0.4.0`.
+- Bumped firmware/docs version to `0.3.24` in:
+  - [D.E.M.ino](D.E.M.ino)
+  - [README.md](README.md)
+
+10. Relay error diagnostics hardening
+- Added relay restart serialization to reduce socket rebind races from rapid start/stop taps.
+- Updated relay error notification text to include a brief exception summary.
+- Updated phone app version to `0.4.1`.
+- Bumped firmware/docs version to `0.3.25` in:
+  - [D.E.M.ino](D.E.M.ino)
+  - [README.md](README.md)
+
+11. Notification flood fix
+- Removed per-packet notification updates from the relay hot path to prevent Android notification queue shedding.
+- Updated phone app version to `0.4.2`.
+- Bumped firmware/docs version to `0.3.26` in:
+  - [D.E.M.ino](D.E.M.ino)
+  - [README.md](README.md)
+
+12. Phone app architecture upgrade — TCP Server + Cellular modes
+- Added three relay modes: TCP Server, TCP Client, UDP Relay.
+- TCP Server mode: Mission Planner connects to the phone exactly like it connects to COM10.
+- TCP Client mode: phone initiates the TCP connection outward, works through cellular NAT.
+- Both TCP modes support bidirectional MAVLink (commands from MP flow back to the vehicle).
+- Added mode selector UI, per-mode config fields, scrollable layout, and MP-connected indicator.
+- Removed RowButtons helper; added inline Start/Stop with OutlinedButton.
+- Created [scripts/com10-bridge.ps1](scripts/com10-bridge.ps1): PowerShell serial→UDP bridge that reads the ESP32 ground node on COM10 and forwards bytes to the phone app's UDP input port.
+- Updated phone app version to `1.0.0` (versionCode 7).
+- Bumped firmware/docs version to `0.3.27` in:
+  - [D.E.M.ino](D.E.M.ino)
+  - [README.md](README.md)
+
 ## Module and Tool Usage Log
 
 1. 2026-05-14
@@ -161,3 +258,15 @@ This timeline summarizes the major milestones completed in this repository so fa
 - User-facing setup and operation guide: [README.md](README.md)
 - Agent/project workflow guidance: [AGENTS.md](AGENTS.md)
 - This historical summary: [TIMELINE.md](TIMELINE.md)
+
+## 2026-06-07
+
+1. Android GPS injection compatibility hardening
+- Updated phone telemetry app to improve phone GPS sampling reliability and GPS feed compatibility with Pixhawk GPS2 expectations.
+- Updated phone app version to `1.1.7` (versionCode `15`).
+
+2. Documentation/version synchronization
+- Bumped firmware/docs version to `0.3.35` in:
+  - [D.E.M.ino](D.E.M.ino)
+  - [README.md](README.md)
+- Added explicit document version headers to handoff/prep docs for consistent release tracking.
