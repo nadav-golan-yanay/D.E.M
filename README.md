@@ -2,8 +2,41 @@
 
 Telemetry bridge stack for Pixhawk and Mission Planner, with ESP32 firmware, Android relay tooling, and Raspberry Pi companion templates.
 
-Current firmware/docs version: `0.3.49`
+Current firmware/docs version: `0.3.50`
 Current Android app version: `1.3.0` (versionCode `27`)
+
+## Branching Model (Controller-Based)
+
+Long-lived branches are organized by controller type:
+
+- `main` = integration/default branch for shared and cross-system work
+- `phone` = phone app track, focused on [android-telemetry-app](android-telemetry-app)
+- `esp` = ESP telemetry firmware track, focused on [D.E.M.ino](D.E.M.ino)
+- `pi` = Pi telemetry/companion track, focused on [pi/](pi/)
+
+If `phone` is not yet created in remote, phone work can temporarily flow through `main` until the split is completed.
+
+### Ownership by scope
+
+- Phone app work belongs on `phone` (or temporarily `main` during migration).
+- ESP firmware work belongs on `esp`.
+- Pi telemetry/companion work belongs on `pi`.
+- Root architecture docs that affect all subsystems stay coordinated across long-lived branches.
+
+### Merge policy
+
+- Start feature work from the relevant long-lived branch:
+  - phone feature branch -> `phone`
+  - ESP feature branch -> `esp`
+  - Pi feature branch -> `pi`
+- Use `main` for integration work and deliberate cross-system changes.
+- Only cross-merge between controller branches when a change intentionally impacts multiple controller types.
+
+### PR and branch protection expectations
+
+- Require review and validation per long-lived branch.
+- Keep PR scope aligned to one controller type when possible.
+- Do not mix unrelated Android, ESP, and Pi changes in one PR unless the change is explicitly cross-platform.
 
 ## Repository Layout
 
