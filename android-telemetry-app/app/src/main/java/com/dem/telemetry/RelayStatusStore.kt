@@ -21,6 +21,11 @@ data class RelayStatus(
     val tcpClientPort: Int = 5760,
     // Optional phone-to-Pixhawk GPS injection over MAVLink GPS_INPUT
     val phoneGpsInjectionEnabled: Boolean = false,
+    // Optional camera stream endpoint for quick launch from app UI
+    val cameraEnabled: Boolean = false,
+    val cameraHost: String = "192.168.137.1",
+    val cameraPort: Int = 8080,
+    val cameraPath: String = "/stream",
     // runtime
     val mpConnected: Boolean = false,
     val packetsForwarded: Long = 0,

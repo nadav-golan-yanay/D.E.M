@@ -1,6 +1,6 @@
 # DEM Telemetry Relay App
 
-Current app version: `1.1.7` (versionCode `15`)
+Current app version: `1.3.0` (versionCode `27`)
 
 This folder contains a minimal Android app scaffold for phone-side telemetry forwarding.
 
@@ -10,6 +10,7 @@ This folder contains a minimal Android app scaffold for phone-side telemetry for
 - Receives UDP telemetry on a configurable local port.
 - Forwards each packet to a configured remote host and port.
 - Shows simple running status and counters.
+- Streams phone camera as H264 RTP/UDP to a configurable host and port (for Mission Planner video endpoint).
 
 ## Intended use
 

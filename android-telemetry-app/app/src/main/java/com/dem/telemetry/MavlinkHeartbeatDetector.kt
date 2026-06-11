@@ -51,6 +51,9 @@ object MavlinkHeartbeatDetector {
         if (msgId != MAVLINK_HEARTBEAT_MSG_ID) {
             return null
         }
+        if (payloadLen < 6) {
+            return null
+        }
 
         val systemId = buffer[start + 3].toInt() and 0xFF
         val componentId = buffer[start + 4].toInt() and 0xFF
@@ -78,6 +81,9 @@ object MavlinkHeartbeatDetector {
         val msgId2 = buffer[start + 9].toInt() and 0xFF
         val msgId = msgId0 or (msgId1 shl 8) or (msgId2 shl 16)
         if (msgId != MAVLINK_HEARTBEAT_MSG_ID) {
+            return null
+        }
+        if (payloadLen < 6) {
             return null
         }
 

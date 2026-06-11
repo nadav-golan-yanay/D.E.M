@@ -19,8 +19,8 @@ android {
         applicationId = "com.dem.telemetry"
         minSdk = 26
         targetSdk = 34
-        versionCode = 15
-        versionName = "1.1.7"
+        versionCode = 27
+        versionName = "1.3.0"
     }
 
     buildTypes {

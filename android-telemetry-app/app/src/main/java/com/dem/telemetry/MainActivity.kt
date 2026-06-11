@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -73,13 +74,20 @@ private fun TelemetryRelayScreen() {
     var tcpClientPortText by rememberSaveable { mutableStateOf("5760") }
     var udpRemoteHost     by rememberSaveable { mutableStateOf("192.168.137.1") }
     var udpRemotePortText by rememberSaveable { mutableStateOf("14550") }
-    var phoneGpsInjectionEnabled by rememberSaveable { mutableStateOf(false) }
+    var phoneGpsInjectionEnabled by remember { mutableStateOf(true) }
+    var cameraEnabled by rememberSaveable { mutableStateOf(false) }
+    var cameraHost by rememberSaveable { mutableStateOf("192.168.137.1") }
+    var cameraPortText by rememberSaveable { mutableStateOf("8080") }
+    var cameraPath by rememberSaveable { mutableStateOf("/stream") }
 
     var hasNotificationPermission by remember {
         mutableStateOf(Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU)
     }
     var hasLocationPermission by remember {
         mutableStateOf(hasPhoneLocationPermission(context))
+    }
+    var hasCameraPermission by remember {
+        mutableStateOf(hasPhoneCameraPermission(context))
     }
     val pixhawkConnected = status.lastPixhawkHeartbeatMs > 0 &&
         (nowMs - status.lastPixhawkHeartbeatMs) <= 3000L
@@ -96,6 +104,12 @@ private fun TelemetryRelayScreen() {
         hasLocationPermission = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
             permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true ||
             hasPhoneLocationPermission(context)
+    }
+
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        hasCameraPermission = granted || hasPhoneCameraPermission(context)
     }
 
     val saveLogsLauncher = rememberLauncherForActivityResult(
@@ -251,6 +265,54 @@ private fun TelemetryRelayScreen() {
                         }
                     }
                 }
+
+                Text(
+                    text = "Camera stream (optional)",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (cameraEnabled) {
+                        Button(onClick = { cameraEnabled = false }) { Text("Camera ON") }
+                    } else {
+                        OutlinedButton(onClick = { cameraEnabled = true }) { Text("Enable camera") }
+                    }
+                    OutlinedButton(onClick = {
+                        val normalizedPath = if (cameraPath.startsWith("/")) cameraPath else "/$cameraPath"
+                        val uri = Uri.parse("http://${cameraHost.trim()}:${cameraPortText.toIntOrNull() ?: 8080}$normalizedPath")
+                        val viewIntent = Intent(Intent.ACTION_VIEW, uri)
+                        runCatching { context.startActivity(viewIntent) }
+                            .onFailure { e -> AppLogStore.error("MainActivity", "Failed to open camera stream", e) }
+                    }) {
+                        Text("Open camera")
+                    }
+                    if (!hasCameraPermission) {
+                        OutlinedButton(onClick = {
+                            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                        }) {
+                            Text("Grant camera")
+                        }
+                    }
+                }
+                if (cameraEnabled) {
+                    OutlinedTextField(
+                        value = cameraHost,
+                        onValueChange = { cameraHost = it.trimStart() },
+                        label = { Text("Camera host / IP") },
+                        modifier = Modifier.fillMaxWidth(), singleLine = true,
+                    )
+                    OutlinedTextField(
+                        value = cameraPortText,
+                        onValueChange = { cameraPortText = it.filter(Char::isDigit) },
+                        label = { Text("Camera port") },
+                        modifier = Modifier.fillMaxWidth(), singleLine = true,
+                    )
+                    OutlinedTextField(
+                        value = cameraPath,
+                        onValueChange = { cameraPath = it.trim() },
+                        label = { Text("Camera path (for example /stream)") },
+                        modifier = Modifier.fillMaxWidth(), singleLine = true,
+                    )
+                }
             }
         }
 
@@ -272,6 +334,12 @@ private fun TelemetryRelayScreen() {
                         putExtra(TelemetryRelayService.EXTRA_TCP_CLIENT_PORT,
                             tcpClientPortText.toIntOrNull() ?: TelemetryRelayService.DEFAULT_TCP_PORT)
                         putExtra(TelemetryRelayService.EXTRA_PHONE_GPS_INJECTION, phoneGpsInjectionEnabled)
+                        putExtra(TelemetryRelayService.EXTRA_CAMERA_ENABLED, cameraEnabled)
+                        putExtra(TelemetryRelayService.EXTRA_CAMERA_HOST, cameraHost)
+                        putExtra(TelemetryRelayService.EXTRA_CAMERA_PORT,
+                            cameraPortText.toIntOrNull() ?: TelemetryRelayService.DEFAULT_CAMERA_PORT)
+                        val normalizedCameraPath = if (cameraPath.startsWith("/")) cameraPath else "/$cameraPath"
+                        putExtra(TelemetryRelayService.EXTRA_CAMERA_PATH, normalizedCameraPath)
                     }
                     ContextCompat.startForegroundService(context, intent)
                 },
@@ -293,7 +361,13 @@ private fun TelemetryRelayScreen() {
                 Text(text = "Relay: ${if (status.running) "running (${status.relayMode})" else "stopped"}")
                 Text(text = "MP connection: ${if (status.mpConnected) "✓ connected" else "waiting…"}")
                 Text(text = "Pixhawk: ${if (pixhawkConnected) "✓ heartbeat active" else "waiting heartbeat"}")
-                Text(text = "Phone GPS injection: ${if (status.phoneGpsInjectionEnabled) "enabled" else "disabled"}")
+                Text(text = "Phone GPS injection (selected): ${if (phoneGpsInjectionEnabled) "enabled" else "disabled"}")
+                Text(text = "Phone GPS injection (running): ${if (status.phoneGpsInjectionEnabled) "enabled" else "disabled"}")
+                Text(text = "Camera option (selected): ${if (cameraEnabled) "enabled" else "disabled"}")
+                Text(text = "Camera option (running): ${if (status.cameraEnabled) "enabled" else "disabled"}")
+                if (status.cameraEnabled) {
+                    Text(text = "Camera endpoint: http://${status.cameraHost}:${status.cameraPort}${status.cameraPath}")
+                }
                 if (status.pixhawkHeartbeatCount > 0) {
                     Text(text = "  sysid=${status.lastHeartbeatSystemId}  hb#${status.pixhawkHeartbeatCount}")
                 }
@@ -341,6 +415,8 @@ private fun buildLogExportText(status: RelayStatus, logs: List<AppLogEntry>): St
     sb.appendLine("relay_running=${status.running}")
     sb.appendLine("relay_mode=${status.relayMode}")
     sb.appendLine("phone_gps_injection_enabled=${status.phoneGpsInjectionEnabled}")
+    sb.appendLine("camera_enabled=${status.cameraEnabled}")
+    sb.appendLine("camera_endpoint=http://${status.cameraHost}:${status.cameraPort}${status.cameraPath}")
     sb.appendLine("mp_connected=${status.mpConnected}")
     sb.appendLine("last_error=${status.lastError ?: "none"}")
     sb.appendLine("packets_forwarded=${status.packetsForwarded}")
@@ -359,4 +435,9 @@ private fun hasPhoneLocationPermission(context: Context): Boolean {
     val fine = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION)
     val coarse = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION)
     return fine == PackageManager.PERMISSION_GRANTED || coarse == PackageManager.PERMISSION_GRANTED
+}
+
+private fun hasPhoneCameraPermission(context: Context): Boolean {
+    val camera = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
+    return camera == PackageManager.PERMISSION_GRANTED
 }
