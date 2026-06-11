@@ -38,6 +38,7 @@ import java.io.Closeable
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
+import java.net.BindException
 import java.net.ConnectException
 import java.net.NoRouteToHostException
 import java.net.SocketException
@@ -48,7 +49,10 @@ import java.net.UnknownHostException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.coroutines.coroutineContext
 import kotlin.coroutines.resume
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 class TelemetryRelayService : Service() {
     private val logTag = "TelemetryRelay"
@@ -62,6 +66,9 @@ class TelemetryRelayService : Service() {
     private var announcedPixhawkHeartbeat = false
     private var mavlinkSeq = 0
     private val vehicleWriteLock = Any()
+    private var gpsInjectionJob: Job? = null
+    private var cameraStreamJob: Job? = null
+    private val relayLifecycleLock = Mutex()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -76,7 +83,7 @@ class TelemetryRelayService : Service() {
 
     override fun onDestroy() {
         AppLogStore.info(logTag, "Service destroyed")
-        stopRelay()
+        stopRelay(stopService = false)
         super.onDestroy()
     }
 
@@ -95,42 +102,73 @@ class TelemetryRelayService : Service() {
             tcpServerPort = intent.getIntExtra(EXTRA_TCP_SERVER_PORT, DEFAULT_TCP_PORT),
             tcpClientHost = normalizeHostInput(intent.getStringExtra(EXTRA_TCP_CLIENT_HOST) ?: DEFAULT_HOST),
             tcpClientPort = intent.getIntExtra(EXTRA_TCP_CLIENT_PORT, DEFAULT_TCP_PORT),
-            phoneGpsInjectionEnabled = intent.getBooleanExtra(EXTRA_PHONE_GPS_INJECTION, false),
+            phoneGpsInjectionEnabled = intent.getBooleanExtra(EXTRA_PHONE_GPS_INJECTION, true),
+            cameraEnabled = intent.getBooleanExtra(EXTRA_CAMERA_ENABLED, false),
+            cameraHost = normalizeHostInput(intent.getStringExtra(EXTRA_CAMERA_HOST) ?: DEFAULT_HOST),
+            cameraPort = intent.getIntExtra(EXTRA_CAMERA_PORT, DEFAULT_CAMERA_PORT),
+            cameraPath = intent.getStringExtra(EXTRA_CAMERA_PATH) ?: DEFAULT_CAMERA_PATH,
         )
-
-        if (relayJob?.isActive == true && config == lastConfig) {
-            AppLogStore.warn(logTag, "Start ignored: relay already running with same config")
-            return
-        }
 
         createChannel()
         startForeground(NOTIFICATION_ID, buildNotification("Starting $mode"))
         AppLogStore.info(logTag, "Starting relay mode=$mode udpInput=${config.udpInputPort}")
+        AppLogStore.info(logTag, "Phone GPS injection requested=${config.phoneGpsInjectionEnabled}")
+        if (config.cameraEnabled) {
+            AppLogStore.info(logTag, "Camera option enabled: ${config.cameraHost}:${config.cameraPort}${config.cameraPath}")
+        }
         announcedPixhawkHeartbeat = false
 
         serviceScope.launch {
-            relayJob?.cancelAndJoin()
-            lastConfig = config
-            RelayStatusStore.setRunning(config)
-            relayJob = launch {
-                when (mode) {
-                    RelayMode.UDP_RELAY -> runUdpRelay(config)
-                    RelayMode.TCP_SERVER -> runTcpServerRelay(config)
-                    RelayMode.TCP_CLIENT -> runTcpClientRelay(config)
+            relayLifecycleLock.withLock {
+                if (relayJob?.isActive == true && config == lastConfig) {
+                    AppLogStore.warn(logTag, "Start ignored: relay already running with same config")
+                    return@withLock
+                }
+
+                gpsInjectionJob?.cancelAndJoin()
+                gpsInjectionJob = null
+                cameraStreamJob?.cancelAndJoin()
+                cameraStreamJob = null
+                relayJob?.cancelAndJoin()
+
+                lastConfig = config
+                RelayStatusStore.setRunning(config)
+                relayJob = launch {
+                    cameraStreamJob = startCameraStreamingIfEnabled(config)
+                    try {
+                        when (mode) {
+                            RelayMode.UDP_RELAY -> runUdpRelay(config)
+                            RelayMode.TCP_SERVER -> runTcpServerRelay(config)
+                            RelayMode.TCP_CLIENT -> runTcpClientRelay(config)
+                        }
+                    } finally {
+                        cameraStreamJob?.cancelAndJoin()
+                        cameraStreamJob = null
+                    }
                 }
             }
         }
     }
 
-    private fun stopRelay() {
-        AppLogStore.info(logTag, "Stopping relay")
-        announcedPixhawkHeartbeat = false
-        relayJob?.cancel()
-        relayJob = null
-        lastConfig = null
-        RelayStatusStore.setStopped()
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+    private fun stopRelay(stopService: Boolean = true) {
+        serviceScope.launch {
+            relayLifecycleLock.withLock {
+                AppLogStore.info(logTag, "Stopping relay")
+                announcedPixhawkHeartbeat = false
+                gpsInjectionJob?.cancelAndJoin()
+                gpsInjectionJob = null
+                cameraStreamJob?.cancelAndJoin()
+                cameraStreamJob = null
+                relayJob?.cancelAndJoin()
+                relayJob = null
+                lastConfig = null
+                RelayStatusStore.setStopped()
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                if (stopService) {
+                    stopSelf()
+                }
+            }
+        }
     }
 
     private suspend fun runUdpRelay(config: RelayStatus) {
@@ -139,11 +177,11 @@ class TelemetryRelayService : Service() {
         AppLogStore.info(logTag, "UDP relay: UDP:${config.udpInputPort} -> ${config.udpRemoteHost}:${config.udpRemotePort}")
         try {
             openVehicleLink(config.udpInputPort).use { vehicleLink ->
-                val gpsInjectionJob = startPhoneGpsInjectionIfEnabled(config, vehicleLink)
+                gpsInjectionJob = startPhoneGpsInjectionIfEnabled(config, vehicleLink)
                 DatagramSocket().use { outputSocket ->
                     AppLogStore.info(logTag, "Vehicle input active: ${vehicleLink.description}")
                     updateNotification("UDP relay ${vehicleLink.description} -> ${config.udpRemoteHost}:${config.udpRemotePort}")
-                    while (serviceScope.isActive) {
+                    while (coroutineContext.isActive) {
                         val bytesRead = try {
                             vehicleLink.read(buffer)
                         } catch (_: SocketTimeoutException) {
@@ -159,10 +197,12 @@ class TelemetryRelayService : Service() {
                         checkHeartbeat(payload)
                     }
                 }
-                gpsInjectionJob?.cancel()
             }
         } catch (e: Exception) {
             recordCrash(e)
+        } finally {
+            gpsInjectionJob?.cancel()
+            gpsInjectionJob = null
         }
     }
 
@@ -170,12 +210,12 @@ class TelemetryRelayService : Service() {
         AppLogStore.info(logTag, "TCP server: binding TCP:${config.tcpServerPort}, UDP input :${config.udpInputPort}")
         try {
             openVehicleLink(config.udpInputPort).use { vehicleLink ->
-                val gpsInjectionJob = startPhoneGpsInjectionIfEnabled(config, vehicleLink)
+                gpsInjectionJob = startPhoneGpsInjectionIfEnabled(config, vehicleLink)
                 AppLogStore.info(logTag, "Vehicle input active: ${vehicleLink.description}")
                 createReusableServerSocket(config.tcpServerPort).use { server ->
                     AppLogStore.info(logTag, "TCP server ready on :${config.tcpServerPort} — waiting for Mission Planner")
                     updateNotification("Waiting for MP on TCP:${config.tcpServerPort}")
-                    while (serviceScope.isActive) {
+                    while (coroutineContext.isActive) {
                         val client = try {
                             withContext(Dispatchers.IO) { server.accept() }
                         } catch (_: SocketTimeoutException) {
@@ -197,10 +237,13 @@ class TelemetryRelayService : Service() {
                         }
                     }
                 }
-                gpsInjectionJob?.cancel()
             }
         } catch (e: Exception) {
             recordCrash(e)
+        } finally {
+            gpsInjectionJob?.cancel()
+            gpsInjectionJob = null
+            RelayStatusStore.setMpConnected(false)
         }
     }
 
@@ -208,9 +251,9 @@ class TelemetryRelayService : Service() {
         AppLogStore.info(logTag, "TCP client: connecting to ${config.tcpClientHost}:${config.tcpClientPort}")
         try {
             openVehicleLink(config.udpInputPort).use { vehicleLink ->
-                val gpsInjectionJob = startPhoneGpsInjectionIfEnabled(config, vehicleLink)
+                gpsInjectionJob = startPhoneGpsInjectionIfEnabled(config, vehicleLink)
                 AppLogStore.info(logTag, "Vehicle input active: ${vehicleLink.description}")
-                while (serviceScope.isActive) {
+                while (coroutineContext.isActive) {
                     try {
                         Socket().use { socket ->
                             updateNotification("Connecting to ${config.tcpClientHost}:${config.tcpClientPort}...")
@@ -222,7 +265,7 @@ class TelemetryRelayService : Service() {
                         }
                     } catch (e: Exception) {
                         RelayStatusStore.setMpConnected(false)
-                        if (!serviceScope.isActive) {
+                        if (!coroutineContext.isActive) {
                             break
                         }
                         val reason = reconnectReason(e)
@@ -235,12 +278,14 @@ class TelemetryRelayService : Service() {
         } catch (_: CancellationException) {
             // Expected when service is stopping.
         } catch (e: SocketException) {
-            if (serviceScope.isActive) {
+            if (coroutineContext.isActive) {
                 recordCrash(e)
             }
         } catch (e: Exception) {
             recordCrash(e)
         } finally {
+            gpsInjectionJob?.cancel()
+            gpsInjectionJob = null
             RelayStatusStore.setMpConnected(false)
         }
     }
@@ -272,6 +317,7 @@ class TelemetryRelayService : Service() {
     @SuppressLint("MissingPermission")
     private fun startPhoneGpsInjectionIfEnabled(config: RelayStatus, vehicleLink: VehicleLink): Job? {
         if (!config.phoneGpsInjectionEnabled) {
+            AppLogStore.info(logTag, "Phone GPS injection disabled in start request")
             return null
         }
         if (!hasLocationPermission()) {
@@ -288,13 +334,15 @@ class TelemetryRelayService : Service() {
             }
         }
 
-        val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
-            .filter { runCatching { locationManager.isProviderEnabled(it) }.getOrDefault(false) }
+        val providers = runCatching { locationManager.getProviders(true) }
+            .getOrDefault(emptyList())
+            .filter { it != LocationManager.PASSIVE_PROVIDER }
 
         if (providers.isEmpty()) {
             AppLogStore.warn(logTag, "Phone GPS injection requested but no location providers are enabled")
             return null
         }
+        AppLogStore.info(logTag, "Phone GPS providers enabled: ${providers.joinToString(",")}")
 
         providers.forEach { provider ->
             runCatching {
@@ -305,21 +353,26 @@ class TelemetryRelayService : Service() {
         }
 
         // Seed with the newest known location so injection can start immediately.
-        val seed = providers
+        val seedProviders = (providers + listOf(LocationManager.PASSIVE_PROVIDER)).distinct()
+        val seed = seedProviders
             .mapNotNull { provider -> runCatching { locationManager.getLastKnownLocation(provider) }.getOrNull() }
             .maxByOrNull { it.time }
         if (seed != null) {
             latest.set(sampleFromLocation(seed))
+            AppLogStore.info(logTag, "Phone GPS seeded from ${seed.provider ?: "unknown"} t=${seed.time}")
+        } else {
+            AppLogStore.warn(logTag, "Phone GPS has no last-known fix yet; waiting for first location update")
         }
 
         AppLogStore.info(logTag, "Phone GPS injection enabled")
         return serviceScope.launch {
             var sentCount = 0L
+            var waitLogTick = 0
             try {
                 while (isActive) {
                     val sample = latest.get()
                     if (sample != null) {
-                        val packet = MavlinkGpsRawIntEncoder.buildPacket(
+                        val packet = MavlinkGpsInputEncoder.buildPacket(
                             sample = sample,
                             sequence = nextMavlinkSeq(),
                         )
@@ -330,10 +383,17 @@ class TelemetryRelayService : Service() {
                                 if (sentCount % 10L == 0L) {
                                     AppLogStore.info(
                                         logTag,
-                                        "Phone GPS injected (GPS2) lat=${sample.lat} lon=${sample.lon} sats=${sample.satellites} hdop=${"%.2f".format(sample.hdop)}",
+                                        "Phone GPS injected (GPS_INPUT id=1) lat=${sample.lat} lon=${sample.lon} sats=${sample.satellites} hdop=${"%.2f".format(sample.hdop)}",
                                     )
                                 }
                             }
+                        waitLogTick = 0
+                    } else {
+                        waitLogTick += 1
+                        if (waitLogTick >= 10) {
+                            AppLogStore.warn(logTag, "Phone GPS waiting for first fix (no location sample yet)")
+                            waitLogTick = 0
+                        }
                     }
                     delay(1000)
                 }
@@ -348,6 +408,42 @@ class TelemetryRelayService : Service() {
         val coarse = ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_COARSE_LOCATION)
         return fine == android.content.pm.PackageManager.PERMISSION_GRANTED ||
             coarse == android.content.pm.PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun startCameraStreamingIfEnabled(config: RelayStatus): Job? {
+        if (!config.cameraEnabled) {
+            return null
+        }
+        if (!hasCameraPermission()) {
+            AppLogStore.warn(logTag, "Camera streaming requested but CAMERA permission is missing")
+            return null
+        }
+        val cameraHost = normalizeHostInput(config.cameraHost)
+        val cameraPort = config.cameraPort
+        return serviceScope.launch {
+            val streamer = PhoneCameraRtpStreamer(
+                context = this@TelemetryRelayService,
+                host = cameraHost,
+                port = cameraPort,
+                logTag = logTag,
+            )
+            try {
+                AppLogStore.info(logTag, "Starting phone camera RTP stream to $cameraHost:$cameraPort")
+                streamer.run()
+            } catch (e: Exception) {
+                if (isActive) {
+                    AppLogStore.error(logTag, "Camera stream failed", e)
+                }
+            } finally {
+                streamer.close()
+                AppLogStore.info(logTag, "Camera stream stopped")
+            }
+        }
+    }
+
+    private fun hasCameraPermission(): Boolean {
+        val camera = ContextCompat.checkSelfPermission(this, android.Manifest.permission.CAMERA)
+        return camera == android.content.pm.PackageManager.PERMISSION_GRANTED
     }
 
     private fun sampleFromLocation(location: Location): PhoneGpsSample {
@@ -366,10 +462,25 @@ class TelemetryRelayService : Service() {
             lat = location.latitude,
             lon = location.longitude,
             altM = if (location.hasAltitude()) location.altitude else 0.0,
+            hasAltitude = location.hasAltitude(),
             hdop = hdop,
+            vdop = (hdop * 1.3f).coerceIn(0.7f, 99.9f),
             satellites = satellites.coerceIn(0, 255),
-            horizontalAccuracyM = location.accuracy,
+            horizontalAccuracyM = location.accuracy.coerceAtLeast(0.5f),
+            verticalAccuracyM = if (location.hasVerticalAccuracy()) {
+                location.verticalAccuracyMeters.coerceAtLeast(0.5f)
+            } else {
+                (location.accuracy * 1.5f).coerceAtLeast(0.8f)
+            },
+            hasVerticalAccuracy = location.hasVerticalAccuracy(),
             speedMps = if (location.hasSpeed()) location.speed else 0f,
+            hasSpeed = location.hasSpeed(),
+            speedAccuracyMps = if (location.hasSpeedAccuracy()) {
+                location.speedAccuracyMetersPerSecond.coerceAtLeast(0.2f)
+            } else {
+                if (location.hasSpeed()) (location.speed * 0.2f).coerceAtLeast(0.5f) else 2.0f
+            },
+            hasSpeedAccuracy = location.hasSpeedAccuracy(),
             courseDeg = if (location.hasBearing()) location.bearing else -1f,
         )
     }
@@ -404,7 +515,7 @@ class TelemetryRelayService : Service() {
         }
 
         try {
-            while (serviceScope.isActive && !socket.isClosed) {
+            while (coroutineContext.isActive && !socket.isClosed) {
                 val bytesRead = try {
                     vehicleLink.read(buffer)
                 } catch (_: SocketTimeoutException) {
@@ -556,11 +667,12 @@ class TelemetryRelayService : Service() {
                 }
             }
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                registerReceiver(receiver, IntentFilter(ACTION_USB_PERMISSION), RECEIVER_NOT_EXPORTED)
-            } else {
-                registerReceiver(receiver, IntentFilter(ACTION_USB_PERMISSION))
-            }
+            ContextCompat.registerReceiver(
+                this@TelemetryRelayService,
+                receiver,
+                IntentFilter(ACTION_USB_PERMISSION),
+                ContextCompat.RECEIVER_NOT_EXPORTED,
+            )
 
             continuation.invokeOnCancellation { runCatching { unregisterReceiver(receiver) } }
             usbManager.requestPermission(device, permissionIntent)
@@ -758,12 +870,25 @@ class TelemetryRelayService : Service() {
         }
     }
 
-    private fun createReusableServerSocket(port: Int): ServerSocket {
-        return ServerSocket().apply {
-            reuseAddress = true
-            soTimeout = 1000
-            bind(InetSocketAddress(port))
+    private suspend fun createReusableServerSocket(port: Int): ServerSocket {
+        val maxAttempts = 12
+        repeat(maxAttempts) { attempt ->
+            try {
+                return ServerSocket().apply {
+                    reuseAddress = true
+                    soTimeout = 1000
+                    bind(InetSocketAddress(port))
+                }
+            } catch (e: BindException) {
+                val inUse = e.message?.contains("EADDRINUSE", ignoreCase = true) == true
+                if (!inUse || attempt == maxAttempts - 1) {
+                    throw e
+                }
+                AppLogStore.warn(logTag, "TCP bind retry ${attempt + 1}/$maxAttempts on :$port (address in use)")
+                delay(300)
+            }
         }
+        throw BindException("bind failed on :$port")
     }
 
     private fun reconnectReason(e: Exception): String {
@@ -793,7 +918,6 @@ class TelemetryRelayService : Service() {
     }
 
     private fun createChannel() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (notificationManager.getNotificationChannel(CHANNEL_ID) != null) return
         notificationManager.createNotificationChannel(
@@ -817,61 +941,91 @@ class TelemetryRelayService : Service() {
             .build()
     }
 
-    companion object {
-        const val ACTION_START = "com.dem.telemetry.action.START"
-        const val ACTION_STOP = "com.dem.telemetry.action.STOP"
-        const val EXTRA_RELAY_MODE = "extra_relay_mode"
-        const val EXTRA_UDP_INPUT_PORT = "extra_udp_input_port"
-        const val EXTRA_UDP_REMOTE_HOST = "extra_udp_remote_host"
-        const val EXTRA_UDP_REMOTE_PORT = "extra_udp_remote_port"
-        const val EXTRA_TCP_SERVER_PORT = "extra_tcp_server_port"
-        const val EXTRA_TCP_CLIENT_HOST = "extra_tcp_client_host"
-        const val EXTRA_TCP_CLIENT_PORT = "extra_tcp_client_port"
-        const val DEFAULT_UDP_PORT = 14550
-        const val DEFAULT_TCP_PORT = 5760
-        const val DEFAULT_HOST = "192.168.137.1"
-        private const val ACTION_USB_PERMISSION = "com.dem.telemetry.action.USB_PERMISSION"
-        private const val CHANNEL_ID = "dem_telemetry_relay"
-        private const val NOTIFICATION_ID = 14550
-        const val EXTRA_PHONE_GPS_INJECTION = "extra_phone_gps_injection"
-    }
-}
     private data class PhoneGpsSample(
         val timeMs: Long,
         val lat: Double,
         val lon: Double,
         val altM: Double,
+        val hasAltitude: Boolean,
         val hdop: Float,
+        val vdop: Float,
         val satellites: Int,
         val horizontalAccuracyM: Float,
+        val verticalAccuracyM: Float,
+        val hasVerticalAccuracy: Boolean,
         val speedMps: Float,
+        val hasSpeed: Boolean,
+        val speedAccuracyMps: Float,
+        val hasSpeedAccuracy: Boolean,
         val courseDeg: Float,
     )
 
-    private object MavlinkGpsRawIntEncoder {
+    private object MavlinkGpsInputEncoder {
         private const val STX_V2 = 0xFD
-        private const val PAYLOAD_LEN = 30
-        private const val MSG_ID_GPS_RAW_INT = 24
-        private const val CRC_EXTRA_GPS_RAW_INT = 24
+        private const val PAYLOAD_LEN = 63
+        private const val MSG_ID_GPS_INPUT = 232
+        private const val CRC_EXTRA_GPS_INPUT = 151
         private const val SYSTEM_ID = 245
         private const val COMPONENT_ID = 220 // MAV_COMP_ID_GPS
 
+        private const val IGNORE_ALT = 1
+        private const val IGNORE_HDOP = 2
+        private const val IGNORE_VDOP = 4
+        private const val IGNORE_VEL_H = 8
+        private const val IGNORE_VEL_V = 16
+        private const val IGNORE_SPEED_ACC = 32
+        private const val IGNORE_HORIZ_ACC = 64
+        private const val IGNORE_VERT_ACC = 128
+        private const val GPS_INPUT_ID = 1
+
         fun buildPacket(sample: PhoneGpsSample, sequence: Int): ByteArray {
             val payload = ByteBuffer.allocate(PAYLOAD_LEN).order(ByteOrder.LITTLE_ENDIAN)
+            val gpsTime = toGpsWeek(sample.timeMs)
+            var ignoreFlags = 0
+            if (!sample.hasAltitude) {
+                ignoreFlags = ignoreFlags or IGNORE_ALT
+            }
+            if (sample.hdop <= 0f || !sample.hdop.isFinite()) {
+                ignoreFlags = ignoreFlags or IGNORE_HDOP
+            }
+            if (sample.vdop <= 0f || !sample.vdop.isFinite()) {
+                ignoreFlags = ignoreFlags or IGNORE_VDOP
+            }
+            if (!sample.hasSpeed) {
+                ignoreFlags = ignoreFlags or IGNORE_VEL_H or IGNORE_VEL_V
+            }
+            if (!sample.hasSpeedAccuracy) {
+                ignoreFlags = ignoreFlags or IGNORE_SPEED_ACC
+            }
+            if (sample.horizontalAccuracyM <= 0f || !sample.horizontalAccuracyM.isFinite()) {
+                ignoreFlags = ignoreFlags or IGNORE_HORIZ_ACC
+            }
+            if (!sample.hasVerticalAccuracy) {
+                ignoreFlags = ignoreFlags or IGNORE_VERT_ACC
+            }
+
             payload.putLong(sample.timeMs * 1000L)
+            payload.putInt(gpsTime.weekMs)
             payload.putInt((sample.lat * 1e7).toInt())
             payload.putInt((sample.lon * 1e7).toInt())
-            payload.putInt((sample.altM * 1000.0).toInt())
-            payload.putShort((sample.hdop * 100f).toInt().coerceIn(0, 65535).toShort())
-            payload.putShort(65535.toShort())
-            payload.putShort((sample.speedMps * 100f).toInt().coerceIn(0, 65535).toShort())
-            val cog = if (sample.courseDeg >= 0f) {
-                (sample.courseDeg * 100f).toInt().coerceIn(0, 35999)
-            } else {
-                65535
+            payload.putFloat(sample.altM.toFloat())
+            payload.putFloat(sample.hdop)
+            payload.putFloat(sample.vdop)
+            payload.putFloat(sample.speedMps)
+            payload.putFloat(0f)
+            payload.putFloat(0f)
+            payload.putFloat(sample.speedAccuracyMps)
+            payload.putFloat(sample.horizontalAccuracyM)
+            payload.putFloat(sample.verticalAccuracyM)
+            // MAVLink field order for uint16 fields in GPS_INPUT payload is ignore_flags, then time_week.
+            payload.putShort(ignoreFlags.toShort())
+            payload.putShort(gpsTime.week.toShort())
+            val fixType = when {
+                sample.satellites >= 6 -> 3
+                sample.satellites >= 4 -> 2
+                else -> 1
             }
-            payload.putShort(cog.toShort())
-            val fixType = if (sample.satellites >= 6) 3 else if (sample.satellites >= 4) 2 else 1
+            payload.put(GPS_INPUT_ID.toByte())
             payload.put(fixType.toByte())
             payload.put(sample.satellites.toByte())
 
@@ -883,17 +1037,26 @@ class TelemetryRelayService : Service() {
             header.put(sequence.toByte())
             header.put(SYSTEM_ID.toByte())
             header.put(COMPONENT_ID.toByte())
-            header.put((MSG_ID_GPS_RAW_INT and 0xFF).toByte())
-            header.put(((MSG_ID_GPS_RAW_INT shr 8) and 0xFF).toByte())
-            header.put(((MSG_ID_GPS_RAW_INT shr 16) and 0xFF).toByte())
+            header.put((MSG_ID_GPS_INPUT and 0xFF).toByte())
+            header.put(((MSG_ID_GPS_INPUT shr 8) and 0xFF).toByte())
+            header.put(((MSG_ID_GPS_INPUT shr 16) and 0xFF).toByte())
 
-            val crc = mavlinkX25(header.array().copyOfRange(1, 10), payload.array(), CRC_EXTRA_GPS_RAW_INT)
+            val crc = mavlinkX25(header.array().copyOfRange(1, 10), payload.array(), CRC_EXTRA_GPS_INPUT)
 
             val packet = ByteBuffer.allocate(10 + PAYLOAD_LEN + 2).order(ByteOrder.LITTLE_ENDIAN)
             packet.put(header.array())
             packet.put(payload.array())
             packet.putShort(crc.toShort())
             return packet.array()
+        }
+
+        private fun toGpsWeek(unixMs: Long): GpsWeekTime {
+            val gpsEpochMs = 315964800000L
+            val delta = (unixMs - gpsEpochMs).coerceAtLeast(0L)
+            val weekMsTotal = 7L * 24L * 60L * 60L * 1000L
+            val week = (delta / weekMsTotal).toInt()
+            val weekMs = (delta % weekMsTotal).toInt()
+            return GpsWeekTime(week, weekMs)
         }
 
         private fun mavlinkX25(headerNoStx: ByteArray, payload: ByteArray, extra: Int): Int {
@@ -913,4 +1076,32 @@ class TelemetryRelayService : Service() {
             tmp = tmp xor ((tmp shl 4) and 0xFF)
             return ((crcIn shr 8) xor (tmp shl 8) xor (tmp shl 3) xor (tmp shr 4)) and 0xFFFF
         }
+
+        private data class GpsWeekTime(val week: Int, val weekMs: Int)
     }
+
+    companion object {
+        const val ACTION_START = "com.dem.telemetry.action.START"
+        const val ACTION_STOP = "com.dem.telemetry.action.STOP"
+        const val EXTRA_RELAY_MODE = "extra_relay_mode"
+        const val EXTRA_UDP_INPUT_PORT = "extra_udp_input_port"
+        const val EXTRA_UDP_REMOTE_HOST = "extra_udp_remote_host"
+        const val EXTRA_UDP_REMOTE_PORT = "extra_udp_remote_port"
+        const val EXTRA_TCP_SERVER_PORT = "extra_tcp_server_port"
+        const val EXTRA_TCP_CLIENT_HOST = "extra_tcp_client_host"
+        const val EXTRA_TCP_CLIENT_PORT = "extra_tcp_client_port"
+        const val DEFAULT_UDP_PORT = 14550
+        const val DEFAULT_TCP_PORT = 5760
+        const val DEFAULT_HOST = "192.168.137.1"
+        const val EXTRA_CAMERA_ENABLED = "extra_camera_enabled"
+        const val EXTRA_CAMERA_HOST = "extra_camera_host"
+        const val EXTRA_CAMERA_PORT = "extra_camera_port"
+        const val EXTRA_CAMERA_PATH = "extra_camera_path"
+        const val DEFAULT_CAMERA_PORT = 8080
+        const val DEFAULT_CAMERA_PATH = "/stream"
+        private const val ACTION_USB_PERMISSION = "com.dem.telemetry.action.USB_PERMISSION"
+        private const val CHANNEL_ID = "dem_telemetry_relay"
+        private const val NOTIFICATION_ID = 14550
+        const val EXTRA_PHONE_GPS_INJECTION = "extra_phone_gps_injection"
+    }
+}

@@ -1,9 +1,9 @@
 # D.E.M
 
-Telemetry bridge stack for Pixhawk and Mission Planner.
+Telemetry bridge stack for Pixhawk and Mission Planner, with ESP32 firmware, Android relay tooling, and Raspberry Pi companion templates.
 
-Current firmware/docs version: `0.3.38`
-Current Android app version: `1.1.7` (versionCode `15`)
+Current firmware/docs version: `0.3.50`
+Current Android app version: `1.3.0` (versionCode `27`)
 
 ## Branching Model (Controller-Based)
 
@@ -38,74 +38,69 @@ If `phone` is not yet created in remote, phone work can temporarily flow through
 - Keep PR scope aligned to one controller type when possible.
 - Do not mix unrelated Android, ESP, and Pi changes in one PR unless the change is explicitly cross-platform.
 
-## What Is Relevant Now
+## Repository Layout
 
-- Primary reliable path today is ESP32 telemetry bridge:
-  - Pixhawk UART -> Air ESP32 -> ESP-NOW -> Ground ESP32 USB -> Mission Planner.
-- Android telemetry relay is active development and supports:
-  - `TCP Server`
-  - `TCP Client`
-  - `UDP Relay`
-  - persistent app logs
-  - phone GPS injection toward Pixhawk GPS2
-- Raspberry Pi companion path is staged and documented, but ESP32 remains fallback for operations.
+- [D.E.M.ino](D.E.M.ino): ESP32 ESP-NOW telemetry bridge firmware (ground/air roles).
+- [android-telemetry-app](android-telemetry-app): Android foreground relay app for MAVLink + GPS injection + optional phone camera RTP stream.
+- [pi](pi): Raspberry Pi service templates and scripts for MAVLink router + camera stream.
+- [MP_RECOVERY_PLAYBOOK.md](MP_RECOVERY_PLAYBOOK.md): Mission Planner recovery workflow.
+- [PI_CAMERA_MIGRATION_PREP.md](PI_CAMERA_MIGRATION_PREP.md): Pi camera migration plan and architecture.
+- [PI_CONNECTION_HANDOFF.md](PI_CONNECTION_HANDOFF.md): Pi network/SSH handoff notes.
 
-## Quick Start (ESP32 Path)
+## Current Architecture
+
+- Stable production path:
+  Pixhawk UART -> Air ESP32 -> ESP-NOW -> Ground ESP32 USB -> Mission Planner
+- Android path (active development):
+  phone app relays MAVLink over TCP/UDP, injects phone GPS via MAVLink GPS_INPUT, and can stream phone camera as H264 RTP/UDP.
+- Pi path (companion migration):
+  telemetry and camera stay as separate IP flows and must never be mixed into MAVLink byte stream.
+
+## Quick Start (ESP32 Telemetry)
 
 1. Open [D.E.M.ino](D.E.M.ino) in Arduino IDE.
-2. Install ESP32 board package (Espressif).
+2. Install Espressif ESP32 board package.
 3. Build and flash one board as ground role and one board as air role.
-4. Use board `ESP32 Dev Module` unless you intentionally use ESP32-CAM.
-5. Keep telemetry baud at `115200`.
-6. On ground laptop, connect Mission Planner to the Ground ESP32 COM port at `115200`.
+4. Use board ESP32 Dev Module unless intentionally using ESP32-CAM.
+5. Keep telemetry baud at 115200.
+6. Connect Mission Planner to Ground ESP32 COM port at 115200.
 
-## Critical Settings
+## Android Relay Highlights
 
-- ESP-NOW channel is fixed to `1`.
-- Role split is compile-time in [D.E.M.ino](D.E.M.ino):
-  - `NODE_ROLE_GROUND`
-  - `NODE_ROLE_AIR`
-- Ground serial output must stay MAVLink-clean.
-- Debug output is disabled by default (`DEBUG_ENABLED=0`).
+See [android-telemetry-app/README.md](android-telemetry-app/README.md) for app usage details.
 
-## Wiring (Air ESP32 <-> Pixhawk)
+Current app capabilities:
 
-- ESP32 `GPIO17` (TX2) -> Pixhawk RX
-- ESP32 `GPIO16` (RX2) -> Pixhawk TX
-- GND -> GND
-- Use 3.3V UART logic only
+- TCP Server mode (Mission Planner connects to phone).
+- TCP Client mode (phone connects out to Mission Planner).
+- UDP Relay mode.
+- Persistent app logs for field diagnosis.
+- Phone GPS injection to Pixhawk GPS2 path via MAVLink GPS_INPUT.
+- Direct phone camera stream to configurable host/port as H264 RTP/UDP.
 
-## Android Telemetry App (Current Scope)
+## Mission Planner Video Notes
 
-- Project location: [android-telemetry-app](android-telemetry-app)
-- Purpose:
-  - bridge MAVLink between phone and Mission Planner over IP
-  - support reconnect and log capture for field troubleshooting
-  - inject phone GPS (lat/lon/sats/hdop stream) toward flight controller GPS2 input path
+- Video is sent as RTP/UDP H264 from phone or Pi endpoints.
+- Recommended default destination port is 5600 when aligning with Pi templates.
+- Camera/video transport remains separate from MAVLink telemetry transport.
 
-For app-specific usage and build notes, see [android-telemetry-app/README.md](android-telemetry-app/README.md).
+## Build and Validation Guidance
 
-## Pi Companion Track
+- Firmware changes in [D.E.M.ino](D.E.M.ino): validate both ground and air roles.
+- Android changes in [android-telemetry-app](android-telemetry-app): run Gradle build before release.
+- Mission Planner acceptance: validate both heartbeat detection and parameter exchange.
 
-- Pi services/templates/scripts are in [pi/](pi/).
-- This is for migration planning and companion operations.
-- Camera/video is IP-only and never mixed into MAVLink telemetry bytes.
+## Publish Checklist
 
-Detailed docs:
-- [PI_CAMERA_MIGRATION_PREP.md](PI_CAMERA_MIGRATION_PREP.md)
-- [PHONE_LINK_WORKSTREAM.md](PHONE_LINK_WORKSTREAM.md)
-- [PI_CONNECTION_HANDOFF.md](PI_CONNECTION_HANDOFF.md)
-
-## Troubleshooting First References
-
-- Mission Planner recovery and deterministic checks:
-  - [MP_RECOVERY_PLAYBOOK.md](MP_RECOVERY_PLAYBOOK.md)
-- Historical milestones and module usage:
-  - [TIMELINE.md](TIMELINE.md)
+1. Build Android release APK from [android-telemetry-app](android-telemetry-app).
+2. Verify no compile/lint errors in modified app modules.
+3. Confirm version synchronization across:
+   - [D.E.M.ino](D.E.M.ino)
+   - [README.md](README.md)
+   - [android-telemetry-app/README.md](android-telemetry-app/README.md)
+   - [android-telemetry-app/app/build.gradle.kts](android-telemetry-app/app/build.gradle.kts)
 
 ## Versioning Rule
 
-- Every code or documentation change bumps version.
-- Keep these synchronized:
-  - `DEM_VERSION` in [D.E.M.ino](D.E.M.ino)
-  - version line in this [README.md](README.md)
+- Every code or documentation change must bump version.
+- Keep firmware/docs and app versions synchronized with repository documentation.
