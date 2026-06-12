@@ -2,8 +2,18 @@
 
 Telemetry bridge stack for Pixhawk and Mission Planner.
 
-Current firmware/docs version: `0.3.38`
+Current firmware/docs version: `0.3.39`
 Current Android app version: `1.1.7` (versionCode `15`)
+
+## Android Telemetry App (Primary Focus)
+
+- Project location: [android-telemetry-app](android-telemetry-app)
+- Purpose:
+  - bridge MAVLink between phone and Mission Planner over IP
+  - support reconnect and log capture for field troubleshooting
+  - inject phone GPS (lat/lon/sats/hdop stream) toward flight controller GPS2 input path
+
+For app-specific usage and build notes, see [android-telemetry-app/README.md](android-telemetry-app/README.md).
 
 ## Branching Model (Controller-Based)
 
@@ -74,16 +84,6 @@ If `phone` is not yet created in remote, phone work can temporarily flow through
 - ESP32 `GPIO16` (RX2) -> Pixhawk TX
 - GND -> GND
 - Use 3.3V UART logic only
-
-## Android Telemetry App (Current Scope)
-
-- Project location: [android-telemetry-app](android-telemetry-app)
-- Purpose:
-  - bridge MAVLink between phone and Mission Planner over IP
-  - support reconnect and log capture for field troubleshooting
-  - inject phone GPS (lat/lon/sats/hdop stream) toward flight controller GPS2 input path
-
-For app-specific usage and build notes, see [android-telemetry-app/README.md](android-telemetry-app/README.md).
 
 ## Pi Companion Track
 
